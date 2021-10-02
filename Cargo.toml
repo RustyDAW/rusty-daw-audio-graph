@@ -1,0 +1,17 @@
+[package]
+name = "rusty-daw-audio-graph"
+version = "0.1.0"
+edition = "2018"
+license = "GPL-3.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rusty-daw-core = "0.1"
+audio-graph = { git = "https://github.com/MeadowlarkDAW/audio-graph.git", rev = "e15ef31b7b0145189723e640c482fec6e333ea0c" }
+basedrop = "0.1"
+atomic_refcell = "0.1"
+ringbuf = "0.2"
+num-traits = "0.2"
+fnv = "1.0"
+log = "0.4"

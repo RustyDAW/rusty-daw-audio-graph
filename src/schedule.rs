@@ -57,7 +57,8 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
 
     // TODO: non-stereo outputs
     /// Only to be used by the rt thread.
-    pub fn from_master_output_interleaved<T: From<f32>>(&self, mut out: &mut [T]) {
+    #[cfg(not(feature = "cpal-backend"))]
+    pub fn from_master_output_interleaved(&self, mut out: &mut [f32]) {
         // This should not panic because the rt thread is the only place these buffers
         // are borrowed.
         let src = &mut *AtomicRefCell::borrow_mut(&self.master_out.0);
@@ -67,8 +68,26 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         out = &mut out[0..frames * 2];
 
         for i in 0..frames {
-            out[i * 2] = src.left[i].into();
-            out[(i * 2) + 1] = src.right[i].into();
+            out[i * 2] = src.left[i];
+            out[(i * 2) + 1] = src.right[i];
+        }
+    }
+
+    // TODO: non-stereo outputs
+    /// Only to be used by the rt thread.
+    #[cfg(feature = "cpal-backend")]
+    pub fn from_master_output_interleaved<T: cpal::Sample>(&self, mut out: &mut [T]) {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        let src = &mut *AtomicRefCell::borrow_mut(&self.master_out.0);
+
+        let frames = self.proc_info.frames.min(out.len() / 2);
+
+        out = &mut out[0..frames * 2];
+
+        for i in 0..frames {
+            out[i * 2] = T::from(&src.left[i]);
+            out[(i * 2) + 1] = T::from(&src.right[i]);
         }
     }
 }

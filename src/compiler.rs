@@ -740,7 +740,51 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     }
 
     /// Where the magic happens! Only to be used by the rt thread.
-    pub fn process<T: From<f32>, G: FnMut(AtomicRefMut<GlobalData>, usize)>(
+    #[cfg(not(feature = "cpal-backend"))]
+    pub fn process<G: FnMut(AtomicRefMut<GlobalData>, usize)>(
+        &self,
+        mut out: &mut [f32],
+        mut global_data_process: G,
+    ) {
+        // Should not panic because the non-rt thread only mutates its own clone of this resource pool. It sends
+        // a clone to the rt thread via a SharedCell.
+        let resource_pool = &mut *AtomicRefCell::borrow_mut(&self.resource_pool);
+
+        // Should not panic because the non-rt thread always creates a new schedule every time before sending
+        // it to the rt thread via a SharedCell.
+        let schedule = &mut *AtomicRefCell::borrow_mut(&self.schedule);
+
+        // Assume output is stereo for now.
+        let mut frames_left = out.len() / 2;
+
+        // Process in blocks.
+        while frames_left > 0 {
+            let frames = frames_left.min(MAX_BLOCKSIZE);
+
+            resource_pool.clear_all_buffers(frames);
+
+            // Process the user's global data. This should not panic because this is the only place
+            // this is ever borrowed.
+            {
+                let global_data = AtomicRefCell::borrow_mut(&self.global_data);
+                global_data_process(global_data, frames);
+            }
+
+            {
+                let global_data = AtomicRefCell::borrow(&self.global_data);
+                schedule.process(frames, global_data);
+            }
+
+            schedule.from_master_output_interleaved(&mut out[0..(frames * 2)]);
+
+            out = &mut out[(frames * 2)..];
+            frames_left -= frames;
+        }
+    }
+
+    /// Where the magic happens! Only to be used by the rt thread.
+    #[cfg(feature = "cpal-backend")]
+    pub fn process<T: cpal::Sample, G: FnMut(AtomicRefMut<GlobalData>, usize)>(
         &self,
         mut out: &mut [T],
         mut global_data_process: G,

@@ -20,39 +20,121 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// The name of this node. This is used for debugging purposes.
     fn debug_name(&self) -> &'static str;
 
-    /// The number of available mono audio input ports in this node.
+    /// The number of available mono audio through ports.
+    ///
+    /// "Through" ports are a single pair of input/output ports that share the same buffer,
+    /// equivalent to the concept of `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP.
+    ///
+    /// These ports do **not** count towards those defined in `unpaired_mono_in_ports`
+    /// and `unpaired_mono_out_ports`.
     ///
     /// This must remain constant for the lifetime of this node.
     ///
-    /// By default, this returns 0 (no ports)
-    fn mono_audio_in_ports(&self) -> u32 {
+    /// By default, this returns 0 (no through ports)
+    fn mono_through_ports(&self) -> u32 {
         0
     }
 
-    /// The number of available mono audio output ports in this node.
+    /// The number of "unpaired" mono audio input ports.
+    ///
+    /// "Unpaired" means that this input port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP. If your port has this "process_replacing()" quality,
+    /// please add it using `mono_through_ports()` instead for better efficiency.
+    ///
+    /// These are distinct from ports defined in `mono_through_ports()`.
     ///
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn mono_audio_out_ports(&self) -> u32 {
+    fn unpaired_mono_in_ports(&self) -> u32 {
         0
     }
 
-    /// The number of available stereo audio input ports in this node.
+    /// The number of "unpaired" mono audio output ports.
+    ///
+    /// "Unpaired" means that this output port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP. If your port has this "process_replacing()" quality,
+    /// please add it using `mono_through_ports()` instead for better efficiency.
+    ///
+    /// These are distinct from ports defined in `mono_through_ports()`.
     ///
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn stereo_audio_in_ports(&self) -> u32 {
+    fn unpaired_mono_out_ports(&self) -> u32 {
         0
     }
 
-    /// The number of available stereo audio output ports in this node.
+    /// The number of available stereo audio through ports.
+    ///
+    /// "Through" ports are a single pair of input/output ports that share the same buffer,
+    /// equivalent to the concept of `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP.
+    ///
+    /// These ports do **not** count towards those defined in `unpaired_stereo_in_ports`
+    /// and `unpaired_stereo_out_ports`.
+    ///
+    /// This must remain constant for the lifetime of this node.
+    ///
+    /// By default, this returns 0 (no through ports)
+    fn stereo_through_ports(&self) -> u32 {
+        0
+    }
+
+    /// The number of "unpaired" stereo audio input ports.
+    ///
+    /// "Unpaired" means that this input port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP. If your port has this "process_replacing()" quality,
+    /// please add it using `stereo_through_ports()` instead for better efficiency.
+    ///
+    /// These are distinct from ports defined in `stereo_through_ports()`.
     ///
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn stereo_audio_out_ports(&self) -> u32 {
+    fn unpaired_stereo_in_ports(&self) -> u32 {
+        0
+    }
+
+    /// The number of "unpaired" stereo audio output ports.
+    ///
+    /// "Unpaired" means that this output port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP. If your port has this "process_replacing()" quality,
+    /// please add it using `stereo_through_ports()` instead for better efficiency.
+    ///
+    /// These are distinct from ports defined in `stereo_through_ports()`.
+    ///
+    /// This must remain constant for the lifetime of this node.
+    ///
+    /// By default, this returns 0 (no ports)
+    fn unpaired_stereo_out_ports(&self) -> u32 {
         0
     }
 

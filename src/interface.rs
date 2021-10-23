@@ -42,14 +42,27 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
 
         let (root_node, _root_node_handle) = StereoGainNode::new(0.0, -90.0, 12.0, sample_rate);
 
-        let root_node_ref = graph_state.add_new_node(
-            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::mono_audio_in_ports(&root_node),
-            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::mono_audio_out_ports(&root_node),
-            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::stereo_audio_in_ports(&root_node),
-            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::stereo_audio_out_ports(&root_node),
+        let root_through_ports = (
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::mono_through_ports(&root_node),
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::stereo_through_ports(&root_node),
         );
 
-        resource_pool.add_node(root_node_ref, Box::new(root_node), DebugNodeID::Root);
+        let root_node_ref = graph_state.add_new_node(
+            root_through_ports.0,
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::unpaired_mono_in_ports(&root_node),
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::unpaired_mono_out_ports(&root_node),
+            root_through_ports.1,
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::unpaired_stereo_in_ports(&root_node),
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::unpaired_stereo_out_ports(&root_node),
+        );
+
+        resource_pool.add_node(
+            root_node_ref,
+            Box::new(root_node),
+            DebugNodeID::Root,
+            root_through_ports.0,
+            root_through_ports.1,
+        );
 
         (
             Self {
@@ -105,29 +118,42 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         node: Box<dyn AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>,
     ) -> NodeRef {
         let debug_name = node.debug_name();
-        let mono_audio_in_ports = node.mono_audio_in_ports();
-        let mono_audio_out_ports = node.mono_audio_out_ports();
-        let stereo_audio_in_ports = node.stereo_audio_in_ports();
-        let stereo_audio_out_ports = node.stereo_audio_out_ports();
+
+        let mono_through_ports = node.mono_through_ports();
+        let unpaired_mono_in_ports = node.unpaired_mono_in_ports();
+        let unpaired_mono_out_ports = node.unpaired_mono_out_ports();
+        let stereo_through_ports = node.stereo_through_ports();
+        let unpaired_stereo_in_ports = node.unpaired_stereo_in_ports();
+        let unpaired_stereo_out_ports = node.unpaired_stereo_out_ports();
+
         let delay = node.delay();
 
         let node_ref = self.graph.add_new_node(
-            mono_audio_in_ports,
-            mono_audio_out_ports,
-            stereo_audio_in_ports,
-            stereo_audio_out_ports,
+            mono_through_ports,
+            unpaired_mono_in_ports,
+            unpaired_mono_out_ports,
+            stereo_through_ports,
+            unpaired_stereo_in_ports,
+            unpaired_stereo_out_ports,
         );
 
-        self.resource_pool
-            .add_node(node_ref, node, DebugNodeID::User((node_ref, debug_name)));
+        self.resource_pool.add_node(
+            node_ref,
+            node,
+            DebugNodeID::User((node_ref, debug_name)),
+            mono_through_ports,
+            stereo_through_ports,
+        );
 
         log::debug!(
-            "Added node to graph: node id: {:?} | # mono in: {} | # mono out: {} | # stereo in: {} | # stereo out: {}, delay: {}",
+            "Added node to graph: node id: {:?} | # mono through: {} | # unpaired mono in: {} | # unpaired mono out: {} | # stereo through: {} | # unpaired stereo in {} | # unpaired stereo out: {}, delay: {}",
             DebugNodeID::User((node_ref, debug_name)),
-            mono_audio_in_ports,
-            mono_audio_out_ports,
-            stereo_audio_in_ports,
-            stereo_audio_out_ports,
+            mono_through_ports,
+            unpaired_mono_in_ports,
+            unpaired_mono_out_ports,
+            stereo_through_ports,
+            unpaired_stereo_in_ports,
+            unpaired_stereo_out_ports,
             delay,
         );
 
@@ -155,7 +181,7 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         node_ref: NodeRef,
         new_node: Box<dyn AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>,
     ) -> Result<(), audio_graph::Error> {
-        // Don't allow replacing the root now.
+        // Don't allow replacing the root node.
         if node_ref == self.root_node {
             log::warn!("Attempted to replace the root node");
 
@@ -175,18 +201,24 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let old_debug_id = old_node.1;
 
         let new_debug_name = new_node.debug_name();
-        let new_mono_audio_in_ports = new_node.mono_audio_in_ports();
-        let new_mono_audio_out_ports = new_node.mono_audio_out_ports();
-        let new_stereo_audio_in_ports = new_node.stereo_audio_in_ports();
-        let new_stereo_audio_out_ports = new_node.stereo_audio_out_ports();
+
+        let new_mono_through_ports = new_node.mono_through_ports();
+        let new_unpaired_mono_in_ports = new_node.unpaired_mono_in_ports();
+        let new_unpaired_mono_out_ports = new_node.unpaired_mono_out_ports();
+        let new_stereo_through_ports = new_node.stereo_through_ports();
+        let new_unpaired_stereo_in_ports = new_node.unpaired_stereo_in_ports();
+        let new_unpaired_stereo_out_ports = new_node.unpaired_stereo_out_ports();
+
         let new_delay = new_node.delay();
 
         self.graph.set_num_ports(
             node_ref,
-            new_node.mono_audio_in_ports(),
-            new_node.mono_audio_out_ports(),
-            new_node.stereo_audio_in_ports(),
-            new_node.stereo_audio_out_ports(),
+            new_mono_through_ports,
+            new_unpaired_mono_in_ports,
+            new_unpaired_mono_out_ports,
+            new_stereo_through_ports,
+            new_unpaired_stereo_in_ports,
+            new_unpaired_stereo_out_ports,
         )?;
 
         self.resource_pool.remove_node(node_ref);
@@ -194,16 +226,20 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             node_ref,
             new_node,
             DebugNodeID::User((node_ref, new_debug_name)),
+            new_mono_through_ports,
+            new_stereo_through_ports,
         );
 
         log::debug!(
-            "Replaced node in graph: old node id: {:?} | new node id: {:?} | new # mono in: {} | new # mono out: {} | new # stereo in: {} | new # stereo out: {}, new delay: {}",
+            "Replaced node in graph: old node id: {:?} | new node id: {:?} | # mono through: {} | # unpaired mono in: {} | # unpaired mono out: {} | # stereo through: {} | # unpaired stereo in {} | # unpaired stereo out: {}, delay: {}",
             old_debug_id,
             DebugNodeID::User((node_ref, new_debug_name)),
-            new_mono_audio_in_ports,
-            new_mono_audio_out_ports,
-            new_stereo_audio_in_ports,
-            new_stereo_audio_out_ports,
+            new_mono_through_ports,
+            new_unpaired_mono_in_ports,
+            new_unpaired_mono_out_ports,
+            new_stereo_through_ports,
+            new_unpaired_stereo_in_ports,
+            new_unpaired_stereo_out_ports,
             new_delay,
         );
 

@@ -21,10 +21,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "MonoSampleDelayNode"
     }
 
-    fn mono_audio_in_ports(&self) -> u32 {
+    // Sample delay requires copying to an intermediate buffer anyway, so there is
+    // no performance benefit to using "process_replacing()". Doing this also makes
+    // it easier for the compiler to insert delay compensation nodes.
+    fn indep_mono_in_ports(&self) -> u32 {
         1
     }
-    fn mono_audio_out_ports(&self) -> u32 {
+    fn indep_mono_out_ports(&self) -> u32 {
         1
     }
 
@@ -38,15 +41,15 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.mono_audio_in.is_empty() || buffers.mono_audio_out.is_empty() {
+        if buffers.indep_mono_in.is_empty() || buffers.indep_mono_out.is_empty() {
             // As per the spec, all unused audio output buffers must be cleared to 0.0.
             buffers.clear_audio_out_buffers(proc_info);
             return;
         }
 
         // Won't panic because we checked these were not empty earlier.
-        let src = &*buffers.mono_audio_in.buffer(0).unwrap();
-        let dst = &mut *buffers.mono_audio_out.buffer_mut(0).unwrap();
+        let src = buffers.indep_mono_in.first().unwrap();
+        let mut dst = buffers.indep_mono_out.first_mut().unwrap();
 
         let frames = proc_info.frames();
 
@@ -138,10 +141,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "StereoSampleDelayNode"
     }
 
-    fn stereo_audio_in_ports(&self) -> u32 {
+    // Sample delay requires copying to an intermediate buffer anyway, so there is
+    // no performance benefit to using "process_replacing()". Doing this also makes
+    // it easier for the compiler to insert delay compensation nodes.
+    fn indep_stereo_in_ports(&self) -> u32 {
         1
     }
-    fn stereo_audio_out_ports(&self) -> u32 {
+    fn indep_stereo_out_ports(&self) -> u32 {
         1
     }
 
@@ -163,15 +169,15 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             return;
         }
 
-        if buffers.stereo_audio_in.is_empty() || buffers.stereo_audio_out.is_empty() {
+        if buffers.indep_stereo_in.is_empty() || buffers.indep_stereo_out.is_empty() {
             // As per the spec, all unused audio output buffers must be cleared to 0.0.
             buffers.clear_audio_out_buffers(proc_info);
             return;
         }
 
         // Won't panic because we checked these were not empty earlier.
-        let src = &*buffers.stereo_audio_in.buffer(0).unwrap();
-        let dst = &mut *buffers.stereo_audio_out.buffer_mut(0).unwrap();
+        let src = buffers.indep_stereo_in.first().unwrap();
+        let mut dst = buffers.indep_stereo_out.first_mut().unwrap();
 
         let frames = proc_info.frames();
 

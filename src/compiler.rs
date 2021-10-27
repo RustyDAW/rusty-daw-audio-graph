@@ -133,14 +133,14 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 node: delay_node,
                 proc_buffers: ProcBuffers {
                     mono_through: MonoProcBuffersMut::new(vec![]),
-                    unpaired_mono_in: MonoProcBuffers::new(vec![(
+                    indep_mono_in: MonoProcBuffers::new(vec![(
                         resource_pool.get_mono_audio_block_buffer(buffer_id),
                         0,
                     )]),
-                    unpaired_mono_out: MonoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
+                    indep_mono_out: MonoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
                     stereo_through: StereoProcBuffersMut::new(vec![]),
-                    unpaired_stereo_in: StereoProcBuffers::new(vec![]),
-                    unpaired_stereo_out: StereoProcBuffersMut::new(vec![]),
+                    indep_stereo_in: StereoProcBuffers::new(vec![]),
+                    indep_stereo_out: StereoProcBuffersMut::new(vec![]),
                 },
             }));
 
@@ -222,14 +222,14 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 node: delay_node,
                 proc_buffers: ProcBuffers {
                     mono_through: MonoProcBuffersMut::new(vec![]),
-                    unpaired_mono_in: MonoProcBuffers::new(vec![]),
-                    unpaired_mono_out: MonoProcBuffersMut::new(vec![]),
+                    indep_mono_in: MonoProcBuffers::new(vec![]),
+                    indep_mono_out: MonoProcBuffersMut::new(vec![]),
                     stereo_through: StereoProcBuffersMut::new(vec![]),
-                    unpaired_stereo_in: StereoProcBuffers::new(vec![(
+                    indep_stereo_in: StereoProcBuffers::new(vec![(
                         resource_pool.get_stereo_audio_block_buffer(buffer_id),
                         0,
                     )]),
-                    unpaired_stereo_out: StereoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
+                    indep_stereo_out: StereoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
                 },
             }));
 
@@ -339,7 +339,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 match port_ident.port_type {
                     PortType::MonoAudio => {
                         let mut through_buffer = None;
-                        let mut sum_unpaired_mono_in: Vec<(
+                        let mut sum_indep_mono_in: Vec<(
                             Shared<(
                                 AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
                                 DebugBufferID,
@@ -375,7 +375,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             if i == 0 {
                                 through_buffer = Some(buffer);
                             } else {
-                                sum_unpaired_mono_in.push((buffer, i));
+                                sum_indep_mono_in.push((buffer, i));
                             }
                         }
 
@@ -445,11 +445,11 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                                     Shared::clone(&through_buffer),
                                     0,
                                 )]),
-                                unpaired_mono_in: MonoProcBuffers::new(sum_unpaired_mono_in),
-                                unpaired_mono_out: MonoProcBuffersMut::new(vec![]),
+                                indep_mono_in: MonoProcBuffers::new(sum_indep_mono_in),
+                                indep_mono_out: MonoProcBuffersMut::new(vec![]),
                                 stereo_through: StereoProcBuffersMut::new(vec![]),
-                                unpaired_stereo_in: StereoProcBuffers::new(vec![]),
-                                unpaired_stereo_out: StereoProcBuffersMut::new(vec![]),
+                                indep_stereo_in: StereoProcBuffers::new(vec![]),
+                                indep_stereo_out: StereoProcBuffersMut::new(vec![]),
                             },
                         }));
 
@@ -457,7 +457,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                     }
                     PortType::StereoAudio => {
                         let mut through_buffer = None;
-                        let mut sum_unpaired_stereo_in: Vec<(
+                        let mut sum_indep_stereo_in: Vec<(
                             Shared<(
                                 AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
                                 DebugBufferID,
@@ -493,7 +493,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             if i == 0 {
                                 through_buffer = Some(buffer);
                             } else {
-                                sum_unpaired_stereo_in.push((buffer, i));
+                                sum_indep_stereo_in.push((buffer, i));
                             }
                         }
 
@@ -560,14 +560,14 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             node: sum_node,
                             proc_buffers: ProcBuffers {
                                 mono_through: MonoProcBuffersMut::new(vec![]),
-                                unpaired_mono_in: MonoProcBuffers::new(vec![]),
-                                unpaired_mono_out: MonoProcBuffersMut::new(vec![]),
+                                indep_mono_in: MonoProcBuffers::new(vec![]),
+                                indep_mono_out: MonoProcBuffersMut::new(vec![]),
                                 stereo_through: StereoProcBuffersMut::new(vec![(
                                     Shared::clone(&through_buffer),
                                     0,
                                 )]),
-                                unpaired_stereo_in: StereoProcBuffers::new(sum_unpaired_stereo_in),
-                                unpaired_stereo_out: StereoProcBuffersMut::new(vec![]),
+                                indep_stereo_in: StereoProcBuffers::new(sum_indep_stereo_in),
+                                indep_stereo_out: StereoProcBuffersMut::new(vec![]),
                             },
                         }));
 
@@ -783,11 +783,11 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 node,
                 proc_buffers: ProcBuffers {
                     mono_through: MonoProcBuffersMut::new(mono_through),
-                    unpaired_mono_in: MonoProcBuffers::new(mono_in),
-                    unpaired_mono_out: MonoProcBuffersMut::new(mono_out),
+                    indep_mono_in: MonoProcBuffers::new(mono_in),
+                    indep_mono_out: MonoProcBuffersMut::new(mono_out),
                     stereo_through: StereoProcBuffersMut::new(stereo_through),
-                    unpaired_stereo_in: StereoProcBuffers::new(stereo_in),
-                    unpaired_stereo_out: StereoProcBuffersMut::new(stereo_out),
+                    indep_stereo_in: StereoProcBuffers::new(stereo_in),
+                    indep_stereo_out: StereoProcBuffersMut::new(stereo_out),
                 },
             }));
         } else {

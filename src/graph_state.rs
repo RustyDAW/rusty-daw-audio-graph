@@ -101,23 +101,19 @@ impl GraphState {
         &mut self,
         node_ref: NodeRef,
         mono_through_ports: u32,
-        unpaired_mono_in_ports: u32,
-        unpaired_mono_out_ports: u32,
+        indep_mono_in_ports: u32,
+        indep_mono_out_ports: u32,
         stereo_through_ports: u32,
-        unpaired_stereo_in_ports: u32,
-        unpaired_stereo_out_ports: u32,
+        indep_stereo_in_ports: u32,
+        indep_stereo_out_ports: u32,
     ) -> Result<(), audio_graph::Error> {
         self.graph.node_check(node_ref)?;
 
         let node_index: usize = node_ref.into();
         let node_state = &mut self.node_states[node_index];
 
-        for i in 0..mono_through_ports as u16 {
-            // If this port
-        }
-
         while node_state.mono_in_port_refs.len()
-            < (mono_through_ports + unpaired_mono_in_ports) as usize
+            < (mono_through_ports + indep_mono_in_ports) as usize
         {
             let port_ref = self
                 .graph
@@ -134,14 +130,14 @@ impl GraphState {
             node_state.mono_in_port_refs.push(port_ref);
         }
         while node_state.mono_in_port_refs.len()
-            > (mono_through_ports + unpaired_mono_in_ports) as usize
+            > (mono_through_ports + indep_mono_in_ports) as usize
         {
             let last_port_ref = node_state.mono_in_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
         while node_state.mono_out_port_refs.len()
-            < (mono_through_ports + unpaired_mono_out_ports) as usize
+            < (mono_through_ports + indep_mono_out_ports) as usize
         {
             let port_ref = self
                 .graph
@@ -158,14 +154,14 @@ impl GraphState {
             node_state.mono_out_port_refs.push(port_ref);
         }
         while node_state.mono_out_port_refs.len()
-            > (mono_through_ports + unpaired_mono_out_ports) as usize
+            > (mono_through_ports + indep_mono_out_ports) as usize
         {
             let last_port_ref = node_state.mono_out_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
         while node_state.stereo_in_port_refs.len()
-            < (stereo_through_ports + unpaired_stereo_in_ports) as usize
+            < (stereo_through_ports + indep_stereo_in_ports) as usize
         {
             let port_ref = self
                 .graph
@@ -182,14 +178,14 @@ impl GraphState {
             node_state.stereo_in_port_refs.push(port_ref);
         }
         while node_state.stereo_in_port_refs.len()
-            > (stereo_through_ports + unpaired_stereo_in_ports) as usize
+            > (stereo_through_ports + indep_stereo_in_ports) as usize
         {
             let last_port_ref = node_state.stereo_in_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
         while node_state.stereo_out_port_refs.len()
-            < (stereo_through_ports + unpaired_stereo_out_ports) as usize
+            < (stereo_through_ports + indep_stereo_out_ports) as usize
         {
             let port_ref = self
                 .graph
@@ -206,7 +202,7 @@ impl GraphState {
             node_state.stereo_out_port_refs.push(port_ref);
         }
         while node_state.stereo_out_port_refs.len()
-            > (stereo_through_ports + unpaired_stereo_out_ports) as usize
+            > (stereo_through_ports + indep_stereo_out_ports) as usize
         {
             let last_port_ref = node_state.stereo_out_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
@@ -218,11 +214,11 @@ impl GraphState {
     pub fn add_new_node(
         &mut self,
         mono_through_ports: u32,
-        unpaired_mono_in_ports: u32,
-        unpaired_mono_out_ports: u32,
+        indep_mono_in_ports: u32,
+        indep_mono_out_ports: u32,
         stereo_through_ports: u32,
-        unpaired_stereo_in_ports: u32,
-        unpaired_stereo_out_ports: u32,
+        indep_stereo_in_ports: u32,
+        indep_stereo_out_ports: u32,
     ) -> NodeRef {
         let node_ref = self.graph.node(NodeRef::default());
         // We're using the node reference as the identifier. The node reference is just an index
@@ -241,7 +237,7 @@ impl GraphState {
         let mut stereo_in_port_refs: Vec<PortRef> = Vec::new();
         let mut stereo_out_port_refs: Vec<PortRef> = Vec::new();
 
-        for i in 0..(mono_through_ports + unpaired_mono_in_ports) as u16 {
+        for i in 0..(mono_through_ports + indep_mono_in_ports) as u16 {
             mono_in_port_refs.push(
                 self.graph
                     .port(
@@ -256,7 +252,7 @@ impl GraphState {
                     .unwrap(),
             );
         }
-        for i in 0..(mono_through_ports + unpaired_mono_out_ports) as u16 {
+        for i in 0..(mono_through_ports + indep_mono_out_ports) as u16 {
             mono_out_port_refs.push(
                 self.graph
                     .port(
@@ -272,7 +268,7 @@ impl GraphState {
             );
         }
 
-        for i in 0..(stereo_through_ports + unpaired_stereo_in_ports) as u16 {
+        for i in 0..(stereo_through_ports + indep_stereo_in_ports) as u16 {
             stereo_in_port_refs.push(
                 self.graph
                     .port(
@@ -287,8 +283,8 @@ impl GraphState {
                     .unwrap(),
             );
         }
-        for i in 0..(stereo_through_ports + unpaired_stereo_out_ports) as u16 {
-            mono_out_port_refs.push(
+        for i in 0..(stereo_through_ports + indep_stereo_out_ports) as u16 {
+            stereo_out_port_refs.push(
                 self.graph
                     .port(
                         node_ref,

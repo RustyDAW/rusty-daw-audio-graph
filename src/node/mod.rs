@@ -29,8 +29,8 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// has to copy input/output buffers behind the scenes. So no need to add a separate
     /// "non-process-replacing" version of your DSP.
     ///
-    /// These ports do **not** count towards those defined in `unpaired_mono_in_ports`
-    /// and `unpaired_mono_out_ports`.
+    /// These ports do **not** count towards those defined in `indep_mono_in_ports`
+    /// and `indep_mono_out_ports`.
     ///
     /// This must remain constant for the lifetime of this node.
     ///
@@ -39,9 +39,9 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
         0
     }
 
-    /// The number of "unpaired" mono audio input ports.
+    /// The number of "independent" mono audio input ports.
     ///
-    /// "Unpaired" means that this input port is **not** a "Through" port. "Through" ports are a single
+    /// "Independent" means that this input port is **not** a "Through" port. "Through" ports are a single
     /// pair of input/output ports that share the same buffer, equivalent to the concept of
     /// `process_replacing()` in VST2.
     ///
@@ -55,13 +55,13 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn unpaired_mono_in_ports(&self) -> u32 {
+    fn indep_mono_in_ports(&self) -> u32 {
         0
     }
 
-    /// The number of "unpaired" mono audio output ports.
+    /// The number of "independent" mono audio output ports.
     ///
-    /// "Unpaired" means that this output port is **not** a "Through" port. "Through" ports are a single
+    /// "Independent" means that this output port is **not** a "Through" port. "Through" ports are a single
     /// pair of input/output ports that share the same buffer, equivalent to the concept of
     /// `process_replacing()` in VST2.
     ///
@@ -75,7 +75,7 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn unpaired_mono_out_ports(&self) -> u32 {
+    fn indep_mono_out_ports(&self) -> u32 {
         0
     }
 
@@ -88,8 +88,8 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// has to copy input/output buffers behind the scenes. So no need to add a separate
     /// "non-process-replacing" version of your DSP.
     ///
-    /// These ports do **not** count towards those defined in `unpaired_stereo_in_ports`
-    /// and `unpaired_stereo_out_ports`.
+    /// These ports do **not** count towards those defined in `indep_stereo_in_ports`
+    /// and `indep_stereo_out_ports`.
     ///
     /// This must remain constant for the lifetime of this node.
     ///
@@ -98,9 +98,9 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
         0
     }
 
-    /// The number of "unpaired" stereo audio input ports.
+    /// The number of "independent" stereo audio input ports.
     ///
-    /// "Unpaired" means that this input port is **not** a "Through" port. "Through" ports are a single
+    /// "Independent" means that this input port is **not** a "Through" port. "Through" ports are a single
     /// pair of input/output ports that share the same buffer, equivalent to the concept of
     /// `process_replacing()` in VST2.
     ///
@@ -114,13 +114,13 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn unpaired_stereo_in_ports(&self) -> u32 {
+    fn indep_stereo_in_ports(&self) -> u32 {
         0
     }
 
-    /// The number of "unpaired" stereo audio output ports.
+    /// The number of "independent" stereo audio output ports.
     ///
-    /// "Unpaired" means that this output port is **not** a "Through" port. "Through" ports are a single
+    /// "Independent" means that this output port is **not** a "Through" port. "Through" ports are a single
     /// pair of input/output ports that share the same buffer, equivalent to the concept of
     /// `process_replacing()` in VST2.
     ///
@@ -134,7 +134,7 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// This must remain constant for the lifetime of this node.
     ///
     /// By default, this returns 0 (no ports)
-    fn unpaired_stereo_out_ports(&self) -> u32 {
+    fn indep_stereo_out_ports(&self) -> u32 {
         0
     }
 
@@ -169,7 +169,7 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// In addition, the `sample_rate` and `sample_rate_recip` (1.0 / sample_rate) of the stream
     /// is given. These will remain constant for the lifetime of this node, so these are just provided
     /// for convinience.
-    fn process(
+    fn process<'a>(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
@@ -197,7 +197,7 @@ pub trait AudioGraphNode<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE:
     /// is given. These will remain constant for the lifetime of this node, so these are just provided
     /// for convinience.
     #[allow(unused_variables)]
-    fn process_f64(
+    fn process_f64<'a>(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
         buffers: &mut ProcBuffers<f64, MAX_BLOCKSIZE>,

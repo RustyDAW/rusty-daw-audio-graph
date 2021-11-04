@@ -4,49 +4,68 @@ use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use basedrop::Shared;
 use num_traits::Num;
 use rusty_daw_core::block_buffer::{MonoBlockBuffer, StereoBlockBuffer};
+use smallvec::SmallVec;
 
-use super::{AudioGraphNode, DebugBufferID, DebugNodeID, ProcInfo};
+use super::{
+    AudioGraphNode, DebugBufferID, DebugNodeID, ProcInfo, SMALLVEC_ALLOC_BUFFERS,
+    SMALLVEC_ALLOC_MPR_BUFFERS,
+};
 
+#[non_exhaustive]
 pub enum AudioGraphTask<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> {
     Node(AudioGraphNodeTask<GlobalData, MAX_BLOCKSIZE>),
+    MimicProcessReplacing(MimicProcessReplacingTask<f32, MAX_BLOCKSIZE>),
+}
+
+/// This contains specialized tasks that are necessary in faking "process_replacing" behavior
+/// when the scheduler cannot assign a single buffer to both the input and output. This is
+/// necessary because this audio graph spec gaurantees that nodes that request "process_replacing"
+/// behavior will always get this behavior (so the user doesn't need to have two separate versions
+/// of their DSP code).
+#[non_exhaustive]
+pub enum MimicProcessReplacingTask<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
     CopyMonoBuffers(
-        Vec<(
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-        )>,
+        SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+            ); SMALLVEC_ALLOC_MPR_BUFFERS],
+        >,
     ),
     CopyStereoBuffers(
-        Vec<(
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-        )>,
+        SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+            ); SMALLVEC_ALLOC_MPR_BUFFERS],
+        >,
     ),
     ClearMonoBuffers(
-        Vec<
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+        SmallVec<
+            [Shared<(
+                AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
-            )>,
+            )>; SMALLVEC_ALLOC_MPR_BUFFERS],
         >,
     ),
     ClearStereoBuffers(
-        Vec<
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+        SmallVec<
+            [Shared<(
+                AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
-            )>,
+            )>; SMALLVEC_ALLOC_MPR_BUFFERS],
         >,
     ),
 }
@@ -106,42 +125,48 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> fmt::Debug
                     .field("indep_stereo_out", &indep_stereo_out)
                     .finish()
             }
-            AudioGraphTask::CopyMonoBuffers(task) => {
-                let copy_mono_buffers: Vec<String> = task
-                    .iter()
-                    .map(|b| format!("[src buffer id: {:?}, dst buffer id: {:?}]", b.0 .1, b.1 .1))
-                    .collect();
-                f.debug_struct("AudioGraphTask: CopyMonoBuffers")
-                    .field("copy_mono_buffers", &copy_mono_buffers)
-                    .finish()
-            }
-            AudioGraphTask::CopyStereoBuffers(task) => {
-                let copy_stereo_buffers: Vec<String> = task
-                    .iter()
-                    .map(|b| format!("[src buffer id: {:?}, dst buffer id: {:?}]", b.0 .1, b.1 .1))
-                    .collect();
-                f.debug_struct("AudioGraphTask: CopyStereoBuffers")
-                    .field("copy_stereo_buffers", &copy_stereo_buffers)
-                    .finish()
-            }
-            AudioGraphTask::ClearMonoBuffers(task) => {
-                let clear_mono_buffers: Vec<String> = task
-                    .iter()
-                    .map(|b| format!("[buffer id: {:?}]", b.1))
-                    .collect();
-                f.debug_struct("AudioGraphTask: ClearMonoBuffers")
-                    .field("clear_mono_buffers", &clear_mono_buffers)
-                    .finish()
-            }
-            AudioGraphTask::ClearStereoBuffers(task) => {
-                let clear_stereo_buffers: Vec<String> = task
-                    .iter()
-                    .map(|b| format!("[buffer id: {:?}]", b.1))
-                    .collect();
-                f.debug_struct("AudioGraphTask: ClearStereoBuffers")
-                    .field("clear_stereo_buffers", &clear_stereo_buffers)
-                    .finish()
-            }
+            AudioGraphTask::MimicProcessReplacing(step) => match step {
+                MimicProcessReplacingTask::CopyMonoBuffers(task) => {
+                    let copy_mono_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| {
+                            format!("[src buffer id: {:?}, dst buffer id: {:?}]", b.0 .1, b.1 .1)
+                        })
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::CopyMonoBuffers")
+                        .field("copy_mono_buffers", &copy_mono_buffers)
+                        .finish()
+                }
+                MimicProcessReplacingTask::CopyStereoBuffers(task) => {
+                    let copy_stereo_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| {
+                            format!("[src buffer id: {:?}, dst buffer id: {:?}]", b.0 .1, b.1 .1)
+                        })
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::CopyStereoBuffers")
+                        .field("copy_stereo_buffers", &copy_stereo_buffers)
+                        .finish()
+                }
+                MimicProcessReplacingTask::ClearMonoBuffers(task) => {
+                    let clear_mono_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| format!("[buffer id: {:?}]", b.1))
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::ClearMonoBuffers")
+                        .field("clear_mono_buffers", &clear_mono_buffers)
+                        .finish()
+                }
+                MimicProcessReplacingTask::ClearStereoBuffers(task) => {
+                    let clear_stereo_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| format!("[buffer id: {:?}]", b.1))
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::ClearStereoBuffers")
+                        .field("clear_stereo_buffers", &clear_stereo_buffers)
+                        .finish()
+                }
+            },
         }
     }
 }
@@ -273,24 +298,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> ProcBuffers<T, MAX_BLOCK
 /// The number of buffers may be less than the number of ports on this node. In that
 /// case it just means some ports are disconnected.
 pub struct MonoProcBuffers<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -403,24 +432,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_B
 /// all unused audio output buffers are manually cleared by the node. You may
 /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct MonoProcBuffersMut<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -623,24 +656,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
 /// all unused audio output buffers are manually cleared by the node. You may
 /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct StereoProcBuffers<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -753,24 +790,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX
 /// all unused audio output buffers are manually cleared by the node. You may
 /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct StereoProcBuffersMut<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }

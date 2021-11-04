@@ -3,8 +3,9 @@ use audio_graph::DelayCompInfo;
 use basedrop::{Handle, Shared, SharedCell};
 use rusty_daw_core::block_buffer::{MonoBlockBuffer, StereoBlockBuffer};
 use rusty_daw_core::SampleRate;
+use smallvec::{smallvec, SmallVec};
 
-use crate::task::AudioGraphNodeTask;
+use crate::task::{AudioGraphNodeTask, MimicProcessReplacingTask};
 
 use super::node::sample_delay::{MonoSampleDelayNode, StereoSampleDelayNode};
 use super::node::sum::{MonoSumNode, StereoSumNode};
@@ -15,6 +16,7 @@ use super::task::AudioGraphTask;
 use super::{
     AudioGraphNode, GraphInterface, MonoProcBuffers, MonoProcBuffersMut, NodeRef, PortIdent,
     PortType, ProcBuffers, Schedule, StereoProcBuffers, StereoProcBuffersMut,
+    SMALLVEC_ALLOC_BUFFERS, SMALLVEC_ALLOC_MPR_BUFFERS,
 };
 
 // Beware: this is one hefty boi of a function
@@ -36,7 +38,6 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
         next_sum_node_id,
     } = graph;
 
-    let mut tasks = Vec::<AudioGraphTask<GlobalData, MAX_BLOCKSIZE>>::new();
     let mut master_out_buffer = None;
 
     // Flag all delay comp and sum nodes as unused so we can detect which ones should be
@@ -57,6 +58,18 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
     let mut root_node_scheduled = false;
 
     let graph_schedule = graph_state.graph.compile();
+
+    // TODO: Particuarly with this specific Vec, it could be beneficial to recycle the
+    // allocated memory of the old schedule (once the rt thread is finished with it). The
+    // entire schedule is recreated every time the graph changes, so this optimization
+    // could be worth looking into.
+    //
+    // It would also be cool if we could also somehow recycle the tasks of nodes with a
+    // particuarly large number of assigned buffers (i.e. a mixer), but I imagine this would
+    // be hard to pull off with the current setup. So I wouldn't worry unless it becomes a
+    // serious performance problem in practice.
+    let mut tasks =
+        Vec::<AudioGraphTask<GlobalData, MAX_BLOCKSIZE>>::with_capacity(graph_schedule.len() * 2);
 
     // Insert a mono delay comp node into the schedule. This returns the ID of the temp buffer used.
     let insert_mono_delay_comp_node =
@@ -132,15 +145,15 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
             tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                 node: delay_node,
                 proc_buffers: ProcBuffers {
-                    mono_through: MonoProcBuffersMut::new(vec![]),
-                    indep_mono_in: MonoProcBuffers::new(vec![(
+                    mono_through: MonoProcBuffersMut::new(smallvec![]),
+                    indep_mono_in: MonoProcBuffers::new(smallvec![(
                         resource_pool.get_mono_audio_block_buffer(buffer_id),
                         0,
                     )]),
-                    indep_mono_out: MonoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
-                    stereo_through: StereoProcBuffersMut::new(vec![]),
-                    indep_stereo_in: StereoProcBuffers::new(vec![]),
-                    indep_stereo_out: StereoProcBuffersMut::new(vec![]),
+                    indep_mono_out: MonoProcBuffersMut::new(smallvec![(delayed_buffer, 0)]),
+                    stereo_through: StereoProcBuffersMut::new(smallvec![]),
+                    indep_stereo_in: StereoProcBuffers::new(smallvec![]),
+                    indep_stereo_out: StereoProcBuffersMut::new(smallvec![]),
                 },
             }));
 
@@ -221,15 +234,15 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
             tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                 node: delay_node,
                 proc_buffers: ProcBuffers {
-                    mono_through: MonoProcBuffersMut::new(vec![]),
-                    indep_mono_in: MonoProcBuffers::new(vec![]),
-                    indep_mono_out: MonoProcBuffersMut::new(vec![]),
-                    stereo_through: StereoProcBuffersMut::new(vec![]),
-                    indep_stereo_in: StereoProcBuffers::new(vec![(
+                    mono_through: MonoProcBuffersMut::new(smallvec![]),
+                    indep_mono_in: MonoProcBuffers::new(smallvec![]),
+                    indep_mono_out: MonoProcBuffersMut::new(smallvec![]),
+                    stereo_through: StereoProcBuffersMut::new(smallvec![]),
+                    indep_stereo_in: StereoProcBuffers::new(smallvec![(
                         resource_pool.get_stereo_audio_block_buffer(buffer_id),
                         0,
                     )]),
-                    indep_stereo_out: StereoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
+                    indep_stereo_out: StereoProcBuffersMut::new(smallvec![(delayed_buffer, 0)]),
                 },
             }));
 
@@ -237,34 +250,42 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
         };
 
     for entry in graph_schedule.iter() {
-        let mut mono_in: Vec<(
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
-        let mut mono_out: Vec<(
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
-        let mut stereo_in: Vec<(
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
-        let mut stereo_out: Vec<(
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
+        let mut mono_in: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
+        let mut mono_out: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
+        let mut stereo_in: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
+        let mut stereo_out: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
 
         // TODO: We will need to ensure that none of these buffers overlap when we start using
         // a multi-threaded schedule.
@@ -339,13 +360,15 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 match port_ident.port_type {
                     PortType::MonoAudio => {
                         let mut through_buffer = None;
-                        let mut sum_indep_mono_in: Vec<(
-                            Shared<(
-                                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                                DebugBufferID,
-                            )>,
-                            usize,
-                        )> = Vec::with_capacity(buffers.len());
+                        let mut sum_indep_mono_in: SmallVec<
+                            [(
+                                Shared<(
+                                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                                    DebugBufferID,
+                                )>,
+                                usize,
+                            ); SMALLVEC_ALLOC_BUFFERS],
+                        > = SmallVec::with_capacity(buffers.len());
 
                         for (i, (buf, delay_comp)) in buffers.iter().enumerate() {
                             let buffer_id = buf.buffer_id;
@@ -441,15 +464,15 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                         tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                             node: sum_node,
                             proc_buffers: ProcBuffers {
-                                mono_through: MonoProcBuffersMut::new(vec![(
+                                mono_through: MonoProcBuffersMut::new(smallvec![(
                                     Shared::clone(&through_buffer),
                                     0,
                                 )]),
                                 indep_mono_in: MonoProcBuffers::new(sum_indep_mono_in),
-                                indep_mono_out: MonoProcBuffersMut::new(vec![]),
-                                stereo_through: StereoProcBuffersMut::new(vec![]),
-                                indep_stereo_in: StereoProcBuffers::new(vec![]),
-                                indep_stereo_out: StereoProcBuffersMut::new(vec![]),
+                                indep_mono_out: MonoProcBuffersMut::new(smallvec![]),
+                                stereo_through: StereoProcBuffersMut::new(smallvec![]),
+                                indep_stereo_in: StereoProcBuffers::new(smallvec![]),
+                                indep_stereo_out: StereoProcBuffersMut::new(smallvec![]),
                             },
                         }));
 
@@ -457,13 +480,15 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                     }
                     PortType::StereoAudio => {
                         let mut through_buffer = None;
-                        let mut sum_indep_stereo_in: Vec<(
-                            Shared<(
-                                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                                DebugBufferID,
-                            )>,
-                            usize,
-                        )> = Vec::with_capacity(buffers.len());
+                        let mut sum_indep_stereo_in: SmallVec<
+                            [(
+                                Shared<(
+                                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                                    DebugBufferID,
+                                )>,
+                                usize,
+                            ); SMALLVEC_ALLOC_BUFFERS],
+                        > = SmallVec::with_capacity(buffers.len());
 
                         for (i, (buf, delay_comp)) in buffers.iter().enumerate() {
                             let buffer_id = buf.buffer_id;
@@ -559,15 +584,15 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                         tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                             node: sum_node,
                             proc_buffers: ProcBuffers {
-                                mono_through: MonoProcBuffersMut::new(vec![]),
-                                indep_mono_in: MonoProcBuffers::new(vec![]),
-                                indep_mono_out: MonoProcBuffersMut::new(vec![]),
-                                stereo_through: StereoProcBuffersMut::new(vec![(
+                                mono_through: MonoProcBuffersMut::new(smallvec![]),
+                                indep_mono_in: MonoProcBuffers::new(smallvec![]),
+                                indep_mono_out: MonoProcBuffersMut::new(smallvec![]),
+                                stereo_through: StereoProcBuffersMut::new(smallvec![(
                                     Shared::clone(&through_buffer),
                                     0,
                                 )]),
                                 indep_stereo_in: StereoProcBuffers::new(sum_indep_stereo_in),
-                                indep_stereo_out: StereoProcBuffersMut::new(vec![]),
+                                indep_stereo_out: StereoProcBuffersMut::new(smallvec![]),
                             },
                         }));
 
@@ -643,54 +668,62 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 root_node_scheduled = true;
             }
 
-            let mut mono_through: Vec<(
-                Shared<(
-                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                    DebugBufferID,
-                )>,
-                usize,
-            )> = Vec::new();
-            let mut stereo_through: Vec<(
-                Shared<(
-                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                    DebugBufferID,
-                )>,
-                usize,
-            )> = Vec::new();
+            let mut mono_through: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    usize,
+                ); SMALLVEC_ALLOC_BUFFERS],
+            > = SmallVec::new();
+            let mut stereo_through: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    usize,
+                ); SMALLVEC_ALLOC_BUFFERS],
+            > = SmallVec::new();
 
-            let mut copy_mono_buffers: Vec<(
-                Shared<(
-                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                    DebugBufferID,
-                )>,
-                Shared<(
-                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                    DebugBufferID,
-                )>,
-            )> = Vec::new();
-            let mut copy_stereo_buffers: Vec<(
-                Shared<(
-                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                    DebugBufferID,
-                )>,
-                Shared<(
-                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                    DebugBufferID,
-                )>,
-            )> = Vec::new();
+            let mut copy_mono_buffers: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    Shared<(
+                        AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                ); SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
+            let mut copy_stereo_buffers: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    Shared<(
+                        AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                ); SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
 
-            let mut clear_mono_buffers: Vec<
-                Shared<(
+            let mut clear_mono_buffers: SmallVec<
+                [Shared<(
                     AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
                     DebugBufferID,
-                )>,
-            > = Vec::new();
-            let mut clear_stereo_buffers: Vec<
-                Shared<(
+                )>; SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
+            let mut clear_stereo_buffers: SmallVec<
+                [Shared<(
                     AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
                     DebugBufferID,
-                )>,
-            > = Vec::new();
+                )>; SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
 
             // TODO: Proper process_replacing() behavior instead of just copying buffers behind
             // the scenes.
@@ -766,17 +799,25 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
             }
 
             if !clear_mono_buffers.is_empty() {
-                tasks.push(AudioGraphTask::ClearMonoBuffers(clear_mono_buffers));
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::ClearMonoBuffers(clear_mono_buffers),
+                ));
             }
             if !clear_stereo_buffers.is_empty() {
-                tasks.push(AudioGraphTask::ClearStereoBuffers(clear_stereo_buffers));
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::ClearStereoBuffers(clear_stereo_buffers),
+                ));
             }
 
             if !copy_mono_buffers.is_empty() {
-                tasks.push(AudioGraphTask::CopyMonoBuffers(copy_mono_buffers));
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::CopyMonoBuffers(copy_mono_buffers),
+                ));
             }
             if !copy_stereo_buffers.is_empty() {
-                tasks.push(AudioGraphTask::CopyStereoBuffers(copy_stereo_buffers));
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::CopyStereoBuffers(copy_stereo_buffers),
+                ));
             }
 
             tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {

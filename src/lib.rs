@@ -21,4 +21,7 @@ pub use task::{
     StereoProcBuffersMut,
 };
 
+pub const SMALLVEC_ALLOC_BUFFERS: usize = 4;
+pub const SMALLVEC_ALLOC_MPR_BUFFERS: usize = 4;
+
 // TODO: Write tests

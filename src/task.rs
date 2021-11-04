@@ -4,10 +4,73 @@ use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use basedrop::Shared;
 use num_traits::Num;
 use rusty_daw_core::block_buffer::{MonoBlockBuffer, StereoBlockBuffer};
+use smallvec::SmallVec;
 
-use super::{AudioGraphNode, DebugBufferID, DebugNodeID, ProcInfo};
+use super::{
+    AudioGraphNode, DebugBufferID, DebugNodeID, ProcInfo, SMALLVEC_ALLOC_BUFFERS,
+    SMALLVEC_ALLOC_MPR_BUFFERS,
+};
 
-pub struct AudioGraphTask<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> {
+#[non_exhaustive]
+pub enum AudioGraphTask<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> {
+    Node(AudioGraphNodeTask<GlobalData, MAX_BLOCKSIZE>),
+    MimicProcessReplacing(MimicProcessReplacingTask<f32, MAX_BLOCKSIZE>),
+}
+
+/// This contains specialized tasks that are necessary in faking "process_replacing" behavior
+/// when the scheduler cannot assign a single buffer to both the input and output. This is
+/// necessary because this audio graph spec gaurantees that nodes that request "process_replacing"
+/// behavior will always get this behavior (so the user doesn't need to have two separate versions
+/// of their DSP code).
+#[non_exhaustive]
+pub enum MimicProcessReplacingTask<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
+    CopyMonoBuffers(
+        SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+            ); SMALLVEC_ALLOC_MPR_BUFFERS],
+        >,
+    ),
+    CopyStereoBuffers(
+        SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+            ); SMALLVEC_ALLOC_MPR_BUFFERS],
+        >,
+    ),
+    ClearMonoBuffers(
+        SmallVec<
+            [Shared<(
+                AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                DebugBufferID,
+            )>; SMALLVEC_ALLOC_MPR_BUFFERS],
+        >,
+    ),
+    ClearStereoBuffers(
+        SmallVec<
+            [Shared<(
+                AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                DebugBufferID,
+            )>; SMALLVEC_ALLOC_MPR_BUFFERS],
+        >,
+    ),
+}
+
+pub struct AudioGraphNodeTask<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> {
     pub node: Shared<(
         AtomicRefCell<Box<dyn AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>>,
         DebugNodeID,
@@ -19,69 +82,162 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> fmt::Debug
     for AudioGraphTask<GlobalData, MAX_BLOCKSIZE>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut mono_audio_in = String::new();
-        let mut mono_audio_out = String::new();
-        let mut stereo_audio_in = String::new();
-        let mut stereo_audio_out = String::new();
+        match self {
+            AudioGraphTask::Node(task) => {
+                let mut mono_through = String::new();
+                let mut indep_mono_in = String::new();
+                let mut indep_mono_out = String::new();
+                let mut stereo_through = String::new();
+                let mut indep_stereo_in = String::new();
+                let mut indep_stereo_out = String::new();
+                for b in task.proc_buffers.mono_through.buffers.iter() {
+                    mono_through
+                        .push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                }
+                for b in task.proc_buffers.indep_mono_in.buffers.iter() {
+                    indep_mono_in
+                        .push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                }
+                for b in task.proc_buffers.indep_mono_out.buffers.iter() {
+                    indep_mono_out
+                        .push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                }
+                for b in task.proc_buffers.stereo_through.buffers.iter() {
+                    stereo_through
+                        .push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                }
+                for b in task.proc_buffers.indep_stereo_in.buffers.iter() {
+                    indep_stereo_in
+                        .push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                }
+                for b in task.proc_buffers.indep_stereo_out.buffers.iter() {
+                    indep_stereo_out
+                        .push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                }
 
-        for b in self.proc_buffers.mono_audio_in.buffers.iter() {
-            mono_audio_in.push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
+                f.debug_struct("AudioGraphTask: Node")
+                    .field("node_id", &format!("{:?}", task.node.1))
+                    .field("mono_through", &mono_through)
+                    .field("indep_mono_in", &indep_mono_in)
+                    .field("indep_mono_out", &indep_mono_out)
+                    .field("stereo_through", &stereo_through)
+                    .field("indep_stereo_in", &indep_stereo_in)
+                    .field("indep_stereo_out", &indep_stereo_out)
+                    .finish()
+            }
+            AudioGraphTask::MimicProcessReplacing(step) => match step {
+                MimicProcessReplacingTask::CopyMonoBuffers(task) => {
+                    let copy_mono_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| {
+                            format!("[src buffer id: {:?}, dst buffer id: {:?}]", b.0 .1, b.1 .1)
+                        })
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::CopyMonoBuffers")
+                        .field("copy_mono_buffers", &copy_mono_buffers)
+                        .finish()
+                }
+                MimicProcessReplacingTask::CopyStereoBuffers(task) => {
+                    let copy_stereo_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| {
+                            format!("[src buffer id: {:?}, dst buffer id: {:?}]", b.0 .1, b.1 .1)
+                        })
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::CopyStereoBuffers")
+                        .field("copy_stereo_buffers", &copy_stereo_buffers)
+                        .finish()
+                }
+                MimicProcessReplacingTask::ClearMonoBuffers(task) => {
+                    let clear_mono_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| format!("[buffer id: {:?}]", b.1))
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::ClearMonoBuffers")
+                        .field("clear_mono_buffers", &clear_mono_buffers)
+                        .finish()
+                }
+                MimicProcessReplacingTask::ClearStereoBuffers(task) => {
+                    let clear_stereo_buffers: Vec<String> = task
+                        .iter()
+                        .map(|b| format!("[buffer id: {:?}]", b.1))
+                        .collect();
+                    f.debug_struct("AudioGraphTask: MimicProcessReplacing::ClearStereoBuffers")
+                        .field("clear_stereo_buffers", &clear_stereo_buffers)
+                        .finish()
+                }
+            },
         }
-        for b in self.proc_buffers.mono_audio_out.buffers.iter() {
-            mono_audio_out.push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
-        }
-        for b in self.proc_buffers.stereo_audio_in.buffers.iter() {
-            stereo_audio_in.push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
-        }
-        for b in self.proc_buffers.stereo_audio_out.buffers.iter() {
-            stereo_audio_out.push_str(&format!("[buffer id: {:?}, port index: {}], ", b.0 .1, b.1));
-        }
-
-        f.debug_struct("AudioGraphTask")
-            .field("node_id", &format!("{:?}", self.node.1))
-            .field("mono_audio_in", &mono_audio_in)
-            .field("mono_audio_out", &mono_audio_out)
-            .field("stereo_audio_in", &stereo_audio_in)
-            .field("stereo_audio_out", &stereo_audio_out)
-            .finish()
     }
 }
 
 /// An abstraction that prepares buffers into a nice format for nodes.
 pub struct ProcBuffers<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    /// Mono audio input buffers assigned to this node.
+    /// Mono audio through port buffers assigned to this node.
+    ///
+    /// "Through" ports are a single pair of input/output ports that share the same buffer,
+    /// equivalent to the concept of `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP.
     ///
     /// The number of buffers may be less than the number of ports on this node. In that
     /// case it just means some ports are disconnected.
-    pub mono_audio_in: MonoProcBuffers<T, MAX_BLOCKSIZE>,
+    pub mono_through: MonoProcBuffersMut<T, MAX_BLOCKSIZE>,
 
-    /// Mono audio output buffers assigned to this node.
+    /// The "independent" mono audio input buffers assigned to this node.
+    ///
+    /// "Unpaired" means that the output port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
     ///
     /// The number of buffers may be less than the number of ports on this node. In that
     /// case it just means some ports are disconnected.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
-    pub mono_audio_out: MonoProcBuffersMut<T, MAX_BLOCKSIZE>,
+    pub indep_mono_in: MonoProcBuffers<T, MAX_BLOCKSIZE>,
 
-    /// Stereo audio input buffers assigned to this node.
+    /// The "independent" mono audio output buffers assigned to this node.
+    ///
+    /// "Unpaired" means that the output port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
     ///
     /// The number of buffers may be less than the number of ports on this node. In that
     /// case it just means some ports are disconnected.
-    pub stereo_audio_in: StereoProcBuffers<T, MAX_BLOCKSIZE>,
+    pub indep_mono_out: MonoProcBuffersMut<T, MAX_BLOCKSIZE>,
 
-    /// Stereo audio output buffers assigned to this node.
+    /// Stereo audio through port buffers assigned to this node.
+    ///
+    /// "Through" ports are a single pair of input/output ports that share the same buffer,
+    /// equivalent to the concept of `process_replacing()` in VST2.
+    ///
+    /// Note that the scheduler will *always* use "through" ports if they are available, event if it
+    /// has to copy input/output buffers behind the scenes. So no need to add a separate
+    /// "non-process-replacing" version of your DSP.
     ///
     /// The number of buffers may be less than the number of ports on this node. In that
     /// case it just means some ports are disconnected.
+    pub stereo_through: StereoProcBuffersMut<T, MAX_BLOCKSIZE>,
+
+    /// The "independent" stereo audio input buffers assigned to this node.
     ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
-    pub stereo_audio_out: StereoProcBuffersMut<T, MAX_BLOCKSIZE>,
+    /// "Unpaired" means that the output port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
+    ///
+    /// The number of buffers may be less than the number of ports on this node. In that
+    /// case it just means some ports are disconnected.
+    pub indep_stereo_in: StereoProcBuffers<T, MAX_BLOCKSIZE>,
+
+    /// The "independent" stereo audio output buffers assigned to this node.
+    ///
+    /// "Unpaired" means that the output port is **not** a "Through" port. "Through" ports are a single
+    /// pair of input/output ports that share the same buffer, equivalent to the concept of
+    /// `process_replacing()` in VST2.
+    ///
+    /// The number of buffers may be less than the number of ports on this node. In that
+    /// case it just means some ports are disconnected.
+    pub indep_stereo_out: StereoProcBuffersMut<T, MAX_BLOCKSIZE>,
 }
 
 impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> ProcBuffers<T, MAX_BLOCKSIZE> {
@@ -93,7 +249,17 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> ProcBuffers<T, MAX_BLOCK
     pub fn clear_audio_out_buffers(&mut self, proc_info: &ProcInfo<MAX_BLOCKSIZE>) {
         let frames = proc_info.frames();
 
-        for b in self.mono_audio_out.buffers.iter() {
+        for b in self.mono_through.buffers.iter() {
+            // This should not panic because the rt thread is the only place these buffers
+            // are borrowed.
+            //
+            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+            // but in theory a bug in the scheduler could try and assign the same buffer
+            // twice in the same task or in parallel tasks, so it would be nice to
+            // detect if that happens.
+            (&mut *AtomicRefCell::borrow_mut(&b.0 .0)).clear_frames(frames);
+        }
+        for b in self.indep_mono_out.buffers.iter() {
             // This should not panic because the rt thread is the only place these buffers
             // are borrowed.
             //
@@ -104,7 +270,17 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> ProcBuffers<T, MAX_BLOCK
             (&mut *AtomicRefCell::borrow_mut(&b.0 .0)).clear_frames(frames);
         }
 
-        for b in self.stereo_audio_out.buffers.iter() {
+        for b in self.stereo_through.buffers.iter() {
+            // This should not panic because the rt thread is the only place these buffers
+            // are borrowed.
+            //
+            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+            // but in theory a bug in the scheduler could try and assign the same buffer
+            // twice in the same task or in parallel tasks, so it would be nice to
+            // detect if that happens.
+            (&mut *AtomicRefCell::borrow_mut(&b.0 .0)).clear_frames(frames);
+        }
+        for b in self.indep_stereo_out.buffers.iter() {
             // This should not panic because the rt thread is the only place these buffers
             // are borrowed.
             //
@@ -121,30 +297,29 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> ProcBuffers<T, MAX_BLOCK
 ///
 /// The number of buffers may be less than the number of ports on this node. In that
 /// case it just means some ports are disconnected.
-///
-/// Also please note that the audio output buffers may not be cleared to 0.0. As
-/// such, please do ***NOT*** read from the audio output buffers, and make sure that
-/// all unused audio output buffers are manually cleared by the node. You may
-/// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct MonoProcBuffers<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -161,9 +336,34 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_B
         self.buffers.is_empty()
     }
 
+    /// Get the first buffer in this list of buffers.
+    ///
+    /// Note, this buffer is ***NOT*** necessarily the one assigned to the first port.
+    /// If your node cares about which specific ports are connected, please use
+    /// `buffer_and_port()` instead. There will always be only one buffer per port.
+    ///
+    /// Please note that this method borrows an atomic reference, which means that
+    /// this is inefficient inside per-sample loops. Please use this method outside
+    /// of loops if possible.
+    ///
+    /// You may safely use `unwrap()` if you have previously checked that the index
+    /// is less than this struct's `len()` method. The compiler should elid the unwrap
+    /// in that case.
+    #[inline]
+    pub fn first(&self) -> Option<AtomicRef<MonoBlockBuffer<T, MAX_BLOCKSIZE>>> {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        //
+        // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+        // but in theory a bug in the scheduler could try and assign the same buffer
+        // twice in the same task or in parallel tasks, so it would be nice to
+        // detect if that happens.
+        self.buffers.first().map(|b| AtomicRefCell::borrow(&b.0 .0))
+    }
+
     /// Get a specific buffer in this list of buffers.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port. If your node cares about which specific
     /// ports are connected, please use `buffer_and_port()` instead. There
     /// will always be only one buffer per port.
@@ -175,11 +375,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_B
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer(&self, index: usize) -> Option<AtomicRef<MonoBlockBuffer<T, MAX_BLOCKSIZE>>> {
         // This should not panic because the rt thread is the only place these buffers
@@ -199,7 +394,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_B
     /// `buffer()` if your node cares about which specific ports are connected. There
     /// will always be only one buffer per port.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port.
     ///
     /// Please note that this method borrows an atomic reference, which means that
@@ -209,11 +404,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_B
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_and_port(
         &self,
@@ -242,24 +432,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffers<T, MAX_B
 /// all unused audio output buffers are manually cleared by the node. You may
 /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct MonoProcBuffersMut<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -276,9 +470,61 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
         self.buffers.is_empty()
     }
 
+    /// Get the first buffer in this list of buffers.
+    ///
+    /// Note, this buffer is ***NOT*** necessarily the one assigned to the first port.
+    /// If your node cares about which specific ports are connected, please use
+    /// `buffer_and_port()` instead. There will always be only one buffer per port.
+    ///
+    /// Please note that this method borrows an atomic reference, which means that
+    /// this is inefficient inside per-sample loops. Please use this method outside
+    /// of loops if possible.
+    ///
+    /// You may safely use `unwrap()` if you have previously checked that the index
+    /// is less than this struct's `len()` method. The compiler should elid the unwrap
+    /// in that case.
+    #[inline]
+    pub fn first(&self) -> Option<AtomicRef<MonoBlockBuffer<T, MAX_BLOCKSIZE>>> {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        //
+        // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+        // but in theory a bug in the scheduler could try and assign the same buffer
+        // twice in the same task or in parallel tasks, so it would be nice to
+        // detect if that happens.
+        self.buffers.first().map(|b| AtomicRefCell::borrow(&b.0 .0))
+    }
+
+    /// Get a mutable reference to the first buffer in this list of buffers.
+    ///
+    /// Note, this buffer is ***NOT*** necessarily the one assigned to the first port.
+    /// If your node cares about which specific ports are connected, please use
+    /// `buffer_and_port_mut()` instead. There will always be only one buffer per port.
+    ///
+    /// Please note that this method borrows an atomic reference, which means that
+    /// this is inefficient inside per-sample loops. Please use this method outside
+    /// of loops if possible.
+    ///
+    /// You may safely use `unwrap()` if you have previously checked that the index
+    /// is less than this struct's `len()` method. The compiler should elid the unwrap
+    /// in that case.
+    #[inline]
+    pub fn first_mut(&mut self) -> Option<AtomicRefMut<MonoBlockBuffer<T, MAX_BLOCKSIZE>>> {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        //
+        // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+        // but in theory a bug in the scheduler could try and assign the same buffer
+        // twice in the same task or in parallel tasks, so it would be nice to
+        // detect if that happens.
+        self.buffers
+            .first()
+            .map(|b| AtomicRefCell::borrow_mut(&b.0 .0))
+    }
+
     /// Get a specific buffer in this list of buffers.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port. If your node cares about which specific
     /// ports are connected, please use `buffer_and_port()` instead. There
     /// will always be only one buffer per port.
@@ -290,11 +536,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer(&self, index: usize) -> Option<AtomicRef<MonoBlockBuffer<T, MAX_BLOCKSIZE>>> {
         // This should not panic because the rt thread is the only place these buffers
@@ -311,7 +552,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
 
     /// Get a mutable reference to a specific buffer in this list of buffers.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port. If your node cares about which specific
     /// port are connected, please use `buffer_and_port_mut()` instead. There
     /// will always be only one buffer per port.
@@ -323,11 +564,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_mut(
         &mut self,
@@ -350,7 +586,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
     /// `buffer()` if your node cares about which specific ports are connected. There
     /// will always be only one buffer per port.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port.
     ///
     /// Please note that this method borrows an atomic reference, which means that
@@ -360,11 +596,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_and_port(
         &self,
@@ -387,7 +618,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
     /// `buffer_mut()` if your node cares about which specific ports are connected. There
     /// will always be only one buffer per port.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port.
     ///
     /// Please note that this method borrows an atomic reference, which means that
@@ -397,11 +628,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_and_port_mut(
         &mut self,
@@ -430,24 +656,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> MonoProcBuffersMut<T, MA
 /// all unused audio output buffers are manually cleared by the node. You may
 /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct StereoProcBuffers<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -464,9 +694,34 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX
         self.buffers.is_empty()
     }
 
+    /// Get the first buffer in this list of buffers.
+    ///
+    /// Note, this buffer is ***NOT*** necessarily the one assigned to the first port.
+    /// If your node cares about which specific ports are connected, please use
+    /// `buffer_and_port()` instead. There will always be only one buffer per port.
+    ///
+    /// Please note that this method borrows an atomic reference, which means that
+    /// this is inefficient inside per-sample loops. Please use this method outside
+    /// of loops if possible.
+    ///
+    /// You may safely use `unwrap()` if you have previously checked that the index
+    /// is less than this struct's `len()` method. The compiler should elid the unwrap
+    /// in that case.
+    #[inline]
+    pub fn first(&self) -> Option<AtomicRef<StereoBlockBuffer<T, MAX_BLOCKSIZE>>> {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        //
+        // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+        // but in theory a bug in the scheduler could try and assign the same buffer
+        // twice in the same task or in parallel tasks, so it would be nice to
+        // detect if that happens.
+        self.buffers.first().map(|b| AtomicRefCell::borrow(&b.0 .0))
+    }
+
     /// Get a specific buffer in this list of buffers.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port. If your node cares about which specific
     /// ports are connected, please use `buffer_and_port()` instead. There
     /// will always be only one buffer per port.
@@ -478,11 +733,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer(&self, index: usize) -> Option<AtomicRef<StereoBlockBuffer<T, MAX_BLOCKSIZE>>> {
         // This should not panic because the rt thread is the only place these buffers
@@ -502,7 +752,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX
     /// `buffer()` if your node cares about which specific ports are connected. There
     /// will always be only one buffer per port.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port.
     ///
     /// Please note that this method borrows an atomic reference, which means that
@@ -512,11 +762,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_and_port(
         &self,
@@ -545,24 +790,28 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffers<T, MAX
 /// all unused audio output buffers are manually cleared by the node. You may
 /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
 pub struct StereoProcBuffersMut<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> {
-    buffers: Vec<(
-        Shared<(
-            AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
-            DebugBufferID,
-        )>,
-        usize,
-    )>,
-}
-
-impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, MAX_BLOCKSIZE> {
-    pub(crate) fn new(
-        buffers: Vec<(
+    buffers: SmallVec<
+        [(
             Shared<(
                 AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
                 DebugBufferID,
             )>,
             usize,
-        )>,
+        ); SMALLVEC_ALLOC_BUFFERS],
+    >,
+}
+
+impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, MAX_BLOCKSIZE> {
+    pub(crate) fn new(
+        buffers: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<T, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        >,
     ) -> Self {
         Self { buffers }
     }
@@ -579,9 +828,61 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
         self.buffers.is_empty()
     }
 
+    /// Get the first buffer in this list of buffers.
+    ///
+    /// Note, this buffer is ***NOT*** necessarily the one assigned to the first port.
+    /// If your node cares about which specific ports are connected, please use
+    /// `buffer_and_port()` instead. There will always be only one buffer per port.
+    ///
+    /// Please note that this method borrows an atomic reference, which means that
+    /// this is inefficient inside per-sample loops. Please use this method outside
+    /// of loops if possible.
+    ///
+    /// You may safely use `unwrap()` if you have previously checked that the index
+    /// is less than this struct's `len()` method. The compiler should elid the unwrap
+    /// in that case.
+    #[inline]
+    pub fn first(&self) -> Option<AtomicRef<StereoBlockBuffer<T, MAX_BLOCKSIZE>>> {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        //
+        // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+        // but in theory a bug in the scheduler could try and assign the same buffer
+        // twice in the same task or in parallel tasks, so it would be nice to
+        // detect if that happens.
+        self.buffers.first().map(|b| AtomicRefCell::borrow(&b.0 .0))
+    }
+
+    /// Get a mutable reference to the first buffer in this list of buffers.
+    ///
+    /// Note, this buffer is ***NOT*** necessarily the one assigned to the first port.
+    /// If your node cares about which specific ports are connected, please use
+    /// `buffer_and_port_mut()` instead. There will always be only one buffer per port.
+    ///
+    /// Please note that this method borrows an atomic reference, which means that
+    /// this is inefficient inside per-sample loops. Please use this method outside
+    /// of loops if possible.
+    ///
+    /// You may safely use `unwrap()` if you have previously checked that the index
+    /// is less than this struct's `len()` method. The compiler should elid the unwrap
+    /// in that case.
+    #[inline]
+    pub fn first_mut(&mut self) -> Option<AtomicRefMut<StereoBlockBuffer<T, MAX_BLOCKSIZE>>> {
+        // This should not panic because the rt thread is the only place these buffers
+        // are borrowed.
+        //
+        // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+        // but in theory a bug in the scheduler could try and assign the same buffer
+        // twice in the same task or in parallel tasks, so it would be nice to
+        // detect if that happens.
+        self.buffers
+            .first()
+            .map(|b| AtomicRefCell::borrow_mut(&b.0 .0))
+    }
+
     /// Get a specific buffer in this list of buffers.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port. If your node cares about which specific
     /// ports are connected, please use `buffer_and_port()` instead. There
     /// will always be only one buffer per port.
@@ -593,11 +894,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer(&self, index: usize) -> Option<AtomicRef<StereoBlockBuffer<T, MAX_BLOCKSIZE>>> {
         // This should not panic because the rt thread is the only place these buffers
@@ -614,7 +910,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
 
     /// Get a mutable reference to a specific buffer in this list of buffers.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port. If your node cares about which specific
     /// port are connected, please use `buffer_and_port_mut()` instead. There
     /// will always be only one buffer per port.
@@ -626,11 +922,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_mut(
         &mut self,
@@ -653,7 +944,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
     /// `buffer()` if your node cares about which specific ports are connected. There
     /// will always be only one buffer per port.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port.
     ///
     /// Please note that this method borrows an atomic reference, which means that
@@ -663,11 +954,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_and_port(
         &self,
@@ -690,7 +976,7 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
     /// `buffer_mut()` if your node cares about which specific ports are connected. There
     /// will always be only one buffer per port.
     ///
-    /// Note, `index` is the index that this buffer appears in the list. It is
+    /// Note, `index` is the index that this buffer appears in the list, It is
     /// ***NOT*** the index of the port.
     ///
     /// Please note that this method borrows an atomic reference, which means that
@@ -700,11 +986,6 @@ impl<T: Num + Copy + Clone, const MAX_BLOCKSIZE: usize> StereoProcBuffersMut<T, 
     /// You may safely use `unwrap()` if you have previously checked that the index
     /// is less than this struct's `len()` method. The compiler should elid the unwrap
     /// in that case.
-    ///
-    /// Also please note that the audio output buffers may not be cleared to 0.0. As
-    /// such, please do ***NOT*** read from the audio output buffers, and make sure that
-    /// all unused audio output buffers are manually cleared by the node. You may
-    /// use `ProcBuffers::clear_audio_out_buffers()` for convenience.
     #[inline]
     pub fn buffer_and_port_mut(
         &mut self,

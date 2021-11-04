@@ -3,6 +3,7 @@ use basedrop::Shared;
 use rusty_daw_core::block_buffer::StereoBlockBuffer;
 use rusty_daw_core::SampleRate;
 
+use super::task::MimicProcessReplacingTask;
 use super::{AudioGraphTask, DebugBufferID};
 
 pub struct Schedule<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> {
@@ -43,15 +44,75 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
 
         // Where the magic happens!
         for task in self.tasks.iter_mut() {
-            // This should not panic because the rt thread is the only place these nodes
-            // are borrowed.
-            //
-            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
-            // but in theory a bug in the scheduler could try and assign the same node
-            // twice in parallel tasks, so it would be nice to detect if that happens.
-            let node = &mut *AtomicRefCell::borrow_mut(&task.node.0);
+            match task {
+                AudioGraphTask::Node(task) => {
+                    // This should not panic because the rt thread is the only place these nodes
+                    // are borrowed.
+                    //
+                    // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+                    // but in theory a bug in the scheduler could try and assign the same node
+                    // twice in parallel tasks, so it would be nice to detect if that happens.
+                    let node = &mut *AtomicRefCell::borrow_mut(&task.node.0);
 
-            node.process(&self.proc_info, &mut task.proc_buffers, global_data);
+                    node.process(&self.proc_info, &mut task.proc_buffers, global_data);
+                }
+                AudioGraphTask::MimicProcessReplacing(step) => match step {
+                    MimicProcessReplacingTask::CopyMonoBuffers(task) => {
+                        for (src, dst) in task.iter() {
+                            // This should not panic because the rt thread is the only place these nodes
+                            // are borrowed.
+                            //
+                            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+                            // but in theory a bug in the scheduler could try and assign the same node
+                            // twice in parallel tasks, so it would be nice to detect if that happens.
+                            let src = &*AtomicRefCell::borrow(&src.0);
+                            let dst = &mut *AtomicRefCell::borrow_mut(&dst.0);
+
+                            dst.copy_frames_from(src, frames);
+                        }
+                    }
+                    MimicProcessReplacingTask::CopyStereoBuffers(task) => {
+                        for (src, dst) in task.iter() {
+                            // This should not panic because the rt thread is the only place these nodes
+                            // are borrowed.
+                            //
+                            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+                            // but in theory a bug in the scheduler could try and assign the same node
+                            // twice in parallel tasks, so it would be nice to detect if that happens.
+                            let src = &*AtomicRefCell::borrow(&src.0);
+                            let dst = &mut *AtomicRefCell::borrow_mut(&dst.0);
+
+                            dst.copy_frames_from(src, frames);
+                        }
+                    }
+                    MimicProcessReplacingTask::ClearMonoBuffers(task) => {
+                        for buf in task.iter() {
+                            // This should not panic because the rt thread is the only place these nodes
+                            // are borrowed.
+                            //
+                            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+                            // but in theory a bug in the scheduler could try and assign the same node
+                            // twice in parallel tasks, so it would be nice to detect if that happens.
+                            let buf = &mut *AtomicRefCell::borrow_mut(&buf.0);
+
+                            buf.clear_frames(frames);
+                        }
+                    }
+                    MimicProcessReplacingTask::ClearStereoBuffers(task) => {
+                        for buf in task.iter() {
+                            // This should not panic because the rt thread is the only place these nodes
+                            // are borrowed.
+                            //
+                            // TODO: Use unsafe instead of runtime checking? It would be more efficient,
+                            // but in theory a bug in the scheduler could try and assign the same node
+                            // twice in parallel tasks, so it would be nice to detect if that happens.
+                            let buf = &mut *AtomicRefCell::borrow_mut(&buf.0);
+
+                            buf.clear_frames(frames);
+                        }
+                    }
+                },
+            }
         }
     }
 

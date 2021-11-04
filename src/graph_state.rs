@@ -49,31 +49,31 @@ pub struct PortIdent {
 
 #[derive(Default)]
 pub struct NodeState {
-    mono_audio_in_port_refs: Vec<PortRef>,
-    mono_audio_out_port_refs: Vec<PortRef>,
-    stereo_audio_in_port_refs: Vec<PortRef>,
-    stereo_audio_out_port_refs: Vec<PortRef>,
+    mono_in_port_refs: Vec<PortRef>,
+    mono_out_port_refs: Vec<PortRef>,
+    stereo_in_port_refs: Vec<PortRef>,
+    stereo_out_port_refs: Vec<PortRef>,
 }
 
 impl NodeState {
     #[inline]
-    pub fn mono_audio_in_ports(&self) -> usize {
-        self.mono_audio_in_port_refs.len()
+    pub fn mono_in_ports(&self) -> usize {
+        self.mono_in_port_refs.len()
     }
 
     #[inline]
-    pub fn mono_audio_out_ports(&self) -> usize {
-        self.mono_audio_out_port_refs.len()
+    pub fn mono_out_ports(&self) -> usize {
+        self.mono_out_port_refs.len()
     }
 
     #[inline]
-    pub fn stereo_audio_in_ports(&self) -> usize {
-        self.stereo_audio_in_port_refs.len()
+    pub fn stereo_in_ports(&self) -> usize {
+        self.stereo_in_port_refs.len()
     }
 
     #[inline]
-    pub fn stereo_audio_out_ports(&self) -> usize {
-        self.stereo_audio_out_port_refs.len()
+    pub fn stereo_out_ports(&self) -> usize {
+        self.stereo_out_port_refs.len()
     }
 }
 
@@ -100,17 +100,21 @@ impl GraphState {
     pub fn set_num_ports(
         &mut self,
         node_ref: NodeRef,
-        mono_audio_in_ports: u32,
-        mono_audio_out_ports: u32,
-        stereo_audio_in_ports: u32,
-        stereo_audio_out_ports: u32,
+        mono_through_ports: u32,
+        indep_mono_in_ports: u32,
+        indep_mono_out_ports: u32,
+        stereo_through_ports: u32,
+        indep_stereo_in_ports: u32,
+        indep_stereo_out_ports: u32,
     ) -> Result<(), audio_graph::Error> {
         self.graph.node_check(node_ref)?;
 
         let node_index: usize = node_ref.into();
         let node_state = &mut self.node_states[node_index];
 
-        while node_state.mono_audio_in_port_refs.len() < mono_audio_in_ports as usize {
+        while node_state.mono_in_port_refs.len()
+            < (mono_through_ports + indep_mono_in_ports) as usize
+        {
             let port_ref = self
                 .graph
                 .port(
@@ -119,18 +123,22 @@ impl GraphState {
                     PortIdent {
                         port_type: PortType::MonoAudio,
                         placement: PortPlacement::Input,
-                        index: node_state.mono_audio_in_port_refs.len() as u16,
+                        index: node_state.mono_in_port_refs.len() as u16,
                     },
                 )
                 .unwrap();
-            node_state.mono_audio_in_port_refs.push(port_ref);
+            node_state.mono_in_port_refs.push(port_ref);
         }
-        while node_state.mono_audio_in_port_refs.len() > mono_audio_in_ports as usize {
-            let last_port_ref = node_state.mono_audio_in_port_refs.pop().unwrap();
+        while node_state.mono_in_port_refs.len()
+            > (mono_through_ports + indep_mono_in_ports) as usize
+        {
+            let last_port_ref = node_state.mono_in_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
-        while node_state.mono_audio_out_port_refs.len() < mono_audio_out_ports as usize {
+        while node_state.mono_out_port_refs.len()
+            < (mono_through_ports + indep_mono_out_ports) as usize
+        {
             let port_ref = self
                 .graph
                 .port(
@@ -139,18 +147,22 @@ impl GraphState {
                     PortIdent {
                         port_type: PortType::MonoAudio,
                         placement: PortPlacement::Output,
-                        index: node_state.mono_audio_out_port_refs.len() as u16,
+                        index: node_state.mono_out_port_refs.len() as u16,
                     },
                 )
                 .unwrap();
-            node_state.mono_audio_out_port_refs.push(port_ref);
+            node_state.mono_out_port_refs.push(port_ref);
         }
-        while node_state.mono_audio_out_port_refs.len() > mono_audio_out_ports as usize {
-            let last_port_ref = node_state.mono_audio_out_port_refs.pop().unwrap();
+        while node_state.mono_out_port_refs.len()
+            > (mono_through_ports + indep_mono_out_ports) as usize
+        {
+            let last_port_ref = node_state.mono_out_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
-        while node_state.stereo_audio_in_port_refs.len() < stereo_audio_in_ports as usize {
+        while node_state.stereo_in_port_refs.len()
+            < (stereo_through_ports + indep_stereo_in_ports) as usize
+        {
             let port_ref = self
                 .graph
                 .port(
@@ -159,18 +171,22 @@ impl GraphState {
                     PortIdent {
                         port_type: PortType::StereoAudio,
                         placement: PortPlacement::Input,
-                        index: node_state.stereo_audio_in_port_refs.len() as u16,
+                        index: node_state.stereo_in_port_refs.len() as u16,
                     },
                 )
                 .unwrap();
-            node_state.stereo_audio_in_port_refs.push(port_ref);
+            node_state.stereo_in_port_refs.push(port_ref);
         }
-        while node_state.stereo_audio_in_port_refs.len() > stereo_audio_in_ports as usize {
-            let last_port_ref = node_state.stereo_audio_in_port_refs.pop().unwrap();
+        while node_state.stereo_in_port_refs.len()
+            > (stereo_through_ports + indep_stereo_in_ports) as usize
+        {
+            let last_port_ref = node_state.stereo_in_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
-        while node_state.stereo_audio_out_port_refs.len() < stereo_audio_out_ports as usize {
+        while node_state.stereo_out_port_refs.len()
+            < (stereo_through_ports + indep_stereo_out_ports) as usize
+        {
             let port_ref = self
                 .graph
                 .port(
@@ -179,14 +195,16 @@ impl GraphState {
                     PortIdent {
                         port_type: PortType::StereoAudio,
                         placement: PortPlacement::Output,
-                        index: node_state.stereo_audio_out_port_refs.len() as u16,
+                        index: node_state.stereo_out_port_refs.len() as u16,
                     },
                 )
                 .unwrap();
-            node_state.stereo_audio_out_port_refs.push(port_ref);
+            node_state.stereo_out_port_refs.push(port_ref);
         }
-        while node_state.stereo_audio_out_port_refs.len() > stereo_audio_out_ports as usize {
-            let last_port_ref = node_state.stereo_audio_out_port_refs.pop().unwrap();
+        while node_state.stereo_out_port_refs.len()
+            > (stereo_through_ports + indep_stereo_out_ports) as usize
+        {
+            let last_port_ref = node_state.stereo_out_port_refs.pop().unwrap();
             self.graph.delete_port(last_port_ref).unwrap();
         }
 
@@ -195,10 +213,12 @@ impl GraphState {
 
     pub fn add_new_node(
         &mut self,
-        mono_audio_in_ports: u32,
-        mono_audio_out_ports: u32,
-        stereo_audio_in_ports: u32,
-        stereo_audio_out_ports: u32,
+        mono_through_ports: u32,
+        indep_mono_in_ports: u32,
+        indep_mono_out_ports: u32,
+        stereo_through_ports: u32,
+        indep_stereo_in_ports: u32,
+        indep_stereo_out_ports: u32,
     ) -> NodeRef {
         let node_ref = self.graph.node(NodeRef::default());
         // We're using the node reference as the identifier. The node reference is just an index
@@ -212,8 +232,13 @@ impl GraphState {
             self.node_states.push(NodeState::default());
         }
 
-        let mono_audio_in_port_refs = (0..mono_audio_in_ports as u16)
-            .map(|i| {
+        let mut mono_in_port_refs: Vec<PortRef> = Vec::new();
+        let mut mono_out_port_refs: Vec<PortRef> = Vec::new();
+        let mut stereo_in_port_refs: Vec<PortRef> = Vec::new();
+        let mut stereo_out_port_refs: Vec<PortRef> = Vec::new();
+
+        for i in 0..(mono_through_ports + indep_mono_in_ports) as u16 {
+            mono_in_port_refs.push(
                 self.graph
                     .port(
                         node_ref,
@@ -224,11 +249,11 @@ impl GraphState {
                             index: i,
                         },
                     )
-                    .unwrap()
-            })
-            .collect();
-        let mono_audio_out_port_refs = (0..mono_audio_out_ports as u16)
-            .map(|i| {
+                    .unwrap(),
+            );
+        }
+        for i in 0..(mono_through_ports + indep_mono_out_ports) as u16 {
+            mono_out_port_refs.push(
                 self.graph
                     .port(
                         node_ref,
@@ -239,45 +264,46 @@ impl GraphState {
                             index: i,
                         },
                     )
-                    .unwrap()
-            })
-            .collect();
-        let stereo_audio_in_port_refs = (0..stereo_audio_in_ports as u16)
-            .map(|i| {
+                    .unwrap(),
+            );
+        }
+
+        for i in 0..(stereo_through_ports + indep_stereo_in_ports) as u16 {
+            stereo_in_port_refs.push(
                 self.graph
                     .port(
                         node_ref,
-                        PortType::MonoAudio,
+                        PortType::StereoAudio,
                         PortIdent {
                             port_type: PortType::StereoAudio,
                             placement: PortPlacement::Input,
                             index: i,
                         },
                     )
-                    .unwrap()
-            })
-            .collect();
-        let stereo_audio_out_port_refs = (0..stereo_audio_out_ports as u16)
-            .map(|i| {
+                    .unwrap(),
+            );
+        }
+        for i in 0..(stereo_through_ports + indep_stereo_out_ports) as u16 {
+            stereo_out_port_refs.push(
                 self.graph
                     .port(
                         node_ref,
-                        PortType::MonoAudio,
+                        PortType::StereoAudio,
                         PortIdent {
                             port_type: PortType::StereoAudio,
                             placement: PortPlacement::Output,
                             index: i,
                         },
                     )
-                    .unwrap()
-            })
-            .collect();
+                    .unwrap(),
+            );
+        }
 
         self.node_states[index] = NodeState {
-            mono_audio_in_port_refs,
-            mono_audio_out_port_refs,
-            stereo_audio_in_port_refs,
-            stereo_audio_out_port_refs,
+            mono_in_port_refs,
+            mono_out_port_refs,
+            stereo_in_port_refs,
+            stereo_out_port_refs,
         };
 
         node_ref
@@ -302,33 +328,27 @@ impl GraphState {
         let dest_node_index: usize = dest_node_ref.into();
         let (src_port_ref, dest_port_ref) = match port_type {
             PortType::MonoAudio => {
-                if source_node_port_index >= self.node_states[src_node_index].mono_audio_out_ports()
-                    || dest_node_port_index
-                        >= self.node_states[dest_node_index].mono_audio_in_ports()
+                if source_node_port_index >= self.node_states[src_node_index].mono_out_ports()
+                    || dest_node_port_index >= self.node_states[dest_node_index].mono_in_ports()
                 {
                     return Err(audio_graph::Error::PortDoesNotExist);
                 } else {
                     (
-                        self.node_states[src_node_index].mono_audio_out_port_refs
-                            [source_node_port_index],
-                        self.node_states[dest_node_index].mono_audio_in_port_refs
-                            [dest_node_port_index],
+                        self.node_states[src_node_index].mono_out_port_refs[source_node_port_index],
+                        self.node_states[dest_node_index].mono_in_port_refs[dest_node_port_index],
                     )
                 }
             }
             PortType::StereoAudio => {
-                if source_node_port_index
-                    >= self.node_states[src_node_index].stereo_audio_out_ports()
-                    || dest_node_port_index
-                        >= self.node_states[dest_node_index].stereo_audio_in_ports()
+                if source_node_port_index >= self.node_states[src_node_index].stereo_out_ports()
+                    || dest_node_port_index >= self.node_states[dest_node_index].stereo_in_ports()
                 {
                     return Err(audio_graph::Error::PortDoesNotExist);
                 } else {
                     (
-                        self.node_states[src_node_index].stereo_audio_out_port_refs
+                        self.node_states[src_node_index].stereo_out_port_refs
                             [source_node_port_index],
-                        self.node_states[dest_node_index].stereo_audio_in_port_refs
-                            [dest_node_port_index],
+                        self.node_states[dest_node_index].stereo_in_port_refs[dest_node_port_index],
                     )
                 }
             }
@@ -359,33 +379,27 @@ impl GraphState {
         let dest_node_index: usize = dest_node_ref.into();
         let (src_port_ref, dest_port_ref) = match port_type {
             PortType::MonoAudio => {
-                if source_node_port_index >= self.node_states[src_node_index].mono_audio_out_ports()
-                    || dest_node_port_index
-                        >= self.node_states[dest_node_index].mono_audio_in_ports()
+                if source_node_port_index >= self.node_states[src_node_index].mono_out_ports()
+                    || dest_node_port_index >= self.node_states[dest_node_index].mono_in_ports()
                 {
                     return Err(audio_graph::Error::PortDoesNotExist);
                 } else {
                     (
-                        self.node_states[src_node_index].mono_audio_out_port_refs
-                            [source_node_port_index],
-                        self.node_states[dest_node_index].mono_audio_in_port_refs
-                            [dest_node_port_index],
+                        self.node_states[src_node_index].mono_out_port_refs[source_node_port_index],
+                        self.node_states[dest_node_index].mono_in_port_refs[dest_node_port_index],
                     )
                 }
             }
             PortType::StereoAudio => {
-                if source_node_port_index
-                    >= self.node_states[src_node_index].stereo_audio_out_ports()
-                    || dest_node_port_index
-                        >= self.node_states[dest_node_index].stereo_audio_in_ports()
+                if source_node_port_index >= self.node_states[src_node_index].stereo_out_ports()
+                    || dest_node_port_index >= self.node_states[dest_node_index].stereo_in_ports()
                 {
                     return Err(audio_graph::Error::PortDoesNotExist);
                 } else {
                     (
-                        self.node_states[src_node_index].stereo_audio_out_port_refs
+                        self.node_states[src_node_index].stereo_out_port_refs
                             [source_node_port_index],
-                        self.node_states[dest_node_index].stereo_audio_in_port_refs
-                            [dest_node_port_index],
+                        self.node_states[dest_node_index].stereo_in_port_refs[dest_node_port_index],
                     )
                 }
             }

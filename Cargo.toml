@@ -16,6 +16,7 @@ rusty-daw-core = "0.1"
 audio-graph = { git = "https://github.com/MeadowlarkDAW/audio-graph.git", rev = "e15ef31b7b0145189723e640c482fec6e333ea0c" }
 basedrop = "0.1"
 atomic_refcell = "0.1"
+smallvec = "1.7"
 ringbuf = "0.2"
 num-traits = "0.2"
 fnv = "1.0"

@@ -3,6 +3,9 @@ use audio_graph::DelayCompInfo;
 use basedrop::{Handle, Shared, SharedCell};
 use rusty_daw_core::block_buffer::{MonoBlockBuffer, StereoBlockBuffer};
 use rusty_daw_core::SampleRate;
+use smallvec::{smallvec, SmallVec};
+
+use crate::task::{AudioGraphNodeTask, MimicProcessReplacingTask};
 
 use super::node::sample_delay::{MonoSampleDelayNode, StereoSampleDelayNode};
 use super::node::sum::{MonoSumNode, StereoSumNode};
@@ -13,6 +16,7 @@ use super::task::AudioGraphTask;
 use super::{
     AudioGraphNode, GraphInterface, MonoProcBuffers, MonoProcBuffersMut, NodeRef, PortIdent,
     PortType, ProcBuffers, Schedule, StereoProcBuffers, StereoProcBuffersMut,
+    SMALLVEC_ALLOC_BUFFERS, SMALLVEC_ALLOC_MPR_BUFFERS,
 };
 
 // Beware: this is one hefty boi of a function
@@ -34,7 +38,6 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
         next_sum_node_id,
     } = graph;
 
-    let mut tasks = Vec::<AudioGraphTask<GlobalData, MAX_BLOCKSIZE>>::new();
     let mut master_out_buffer = None;
 
     // Flag all delay comp and sum nodes as unused so we can detect which ones should be
@@ -55,6 +58,18 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
     let mut root_node_scheduled = false;
 
     let graph_schedule = graph_state.graph.compile();
+
+    // TODO: Particuarly with this specific Vec, it could be beneficial to recycle the
+    // allocated memory of the old schedule (once the rt thread is finished with it). The
+    // entire schedule is recreated every time the graph changes, so this optimization
+    // could be worth looking into.
+    //
+    // It would also be cool if we could also somehow recycle the tasks of nodes with a
+    // particuarly large number of assigned buffers (i.e. a mixer), but I imagine this would
+    // be hard to pull off with the current setup. So I wouldn't worry unless it becomes a
+    // serious performance problem in practice.
+    let mut tasks =
+        Vec::<AudioGraphTask<GlobalData, MAX_BLOCKSIZE>>::with_capacity(graph_schedule.len() * 2);
 
     // Insert a mono delay comp node into the schedule. This returns the ID of the temp buffer used.
     let insert_mono_delay_comp_node =
@@ -127,18 +142,20 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                     new_node
                 };
 
-            tasks.push(AudioGraphTask {
+            tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                 node: delay_node,
                 proc_buffers: ProcBuffers {
-                    mono_audio_in: MonoProcBuffers::new(vec![(
+                    mono_through: MonoProcBuffersMut::new(smallvec![]),
+                    indep_mono_in: MonoProcBuffers::new(smallvec![(
                         resource_pool.get_mono_audio_block_buffer(buffer_id),
                         0,
                     )]),
-                    mono_audio_out: MonoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
-                    stereo_audio_in: StereoProcBuffers::new(vec![]),
-                    stereo_audio_out: StereoProcBuffersMut::new(vec![]),
+                    indep_mono_out: MonoProcBuffersMut::new(smallvec![(delayed_buffer, 0)]),
+                    stereo_through: StereoProcBuffersMut::new(smallvec![]),
+                    indep_stereo_in: StereoProcBuffers::new(smallvec![]),
+                    indep_stereo_out: StereoProcBuffersMut::new(smallvec![]),
                 },
-            });
+            }));
 
             *next_temp_mono_block_buffer - 1
         };
@@ -214,56 +231,68 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                     new_node
                 };
 
-            tasks.push(AudioGraphTask {
+            tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                 node: delay_node,
                 proc_buffers: ProcBuffers {
-                    mono_audio_in: MonoProcBuffers::new(vec![]),
-                    mono_audio_out: MonoProcBuffersMut::new(vec![]),
-                    stereo_audio_in: StereoProcBuffers::new(vec![(
+                    mono_through: MonoProcBuffersMut::new(smallvec![]),
+                    indep_mono_in: MonoProcBuffers::new(smallvec![]),
+                    indep_mono_out: MonoProcBuffersMut::new(smallvec![]),
+                    stereo_through: StereoProcBuffersMut::new(smallvec![]),
+                    indep_stereo_in: StereoProcBuffers::new(smallvec![(
                         resource_pool.get_stereo_audio_block_buffer(buffer_id),
                         0,
                     )]),
-                    stereo_audio_out: StereoProcBuffersMut::new(vec![(delayed_buffer, 0)]),
+                    indep_stereo_out: StereoProcBuffersMut::new(smallvec![(delayed_buffer, 0)]),
                 },
-            });
+            }));
 
             *next_temp_stereo_block_buffer - 1
         };
 
     for entry in graph_schedule.iter() {
-        let mut mono_audio_in: Vec<(
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
-        let mut mono_audio_out: Vec<(
-            Shared<(
-                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
-        let mut stereo_audio_in: Vec<(
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
-        let mut stereo_audio_out: Vec<(
-            Shared<(
-                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                DebugBufferID,
-            )>,
-            usize,
-        )> = Vec::new();
+        let mut mono_in: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
+        let mut mono_out: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
+        let mut stereo_in: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
+        let mut stereo_out: SmallVec<
+            [(
+                Shared<(
+                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>,
+                usize,
+            ); SMALLVEC_ALLOC_BUFFERS],
+        > = SmallVec::new();
 
         // TODO: We will need to ensure that none of these buffers overlap when we start using
         // a multi-threaded schedule.
         next_temp_mono_block_buffer = 0;
         next_temp_stereo_block_buffer = 0;
+
+        let node_id: usize = entry.node.into();
 
         for (port_ident, buffers) in entry.inputs.iter() {
             if buffers.len() == 1 {
@@ -297,7 +326,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             resource_pool.get_mono_audio_block_buffer(buffer_id)
                         };
 
-                        mono_audio_in.push((buffer, usize::from(port_ident.index)));
+                        mono_in.push((buffer, usize::from(port_ident.index)));
                     }
                     PortType::StereoAudio => {
                         if buffer_id > max_stereo_block_buffer_id {
@@ -323,23 +352,25 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             resource_pool.get_stereo_audio_block_buffer(buffer_id)
                         };
 
-                        stereo_audio_in.push((buffer, usize::from(port_ident.index)));
+                        stereo_in.push((buffer, usize::from(port_ident.index)));
                     }
                 }
             } else {
-                let node_id: usize = entry.node.into();
                 let num_inputs = buffers.len() as u32;
                 match port_ident.port_type {
                     PortType::MonoAudio => {
-                        let mut sum_mono_audio_in: Vec<(
-                            Shared<(
-                                AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                                DebugBufferID,
-                            )>,
-                            usize,
-                        )> = Vec::with_capacity(buffers.len());
+                        let mut through_buffer = None;
+                        let mut sum_indep_mono_in: SmallVec<
+                            [(
+                                Shared<(
+                                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                                    DebugBufferID,
+                                )>,
+                                usize,
+                            ); SMALLVEC_ALLOC_BUFFERS],
+                        > = SmallVec::with_capacity(buffers.len());
 
-                        for (buf, delay_comp) in buffers.iter() {
+                        for (i, (buf, delay_comp)) in buffers.iter().enumerate() {
                             let buffer_id = buf.buffer_id;
                             if buffer_id > max_mono_block_buffer_id {
                                 max_mono_block_buffer_id = buffer_id;
@@ -364,12 +395,19 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                                 resource_pool.get_mono_audio_block_buffer(buffer_id)
                             };
 
-                            sum_mono_audio_in.push((buffer, usize::from(port_ident.index)));
+                            if i == 0 {
+                                through_buffer = Some(buffer);
+                            } else {
+                                sum_indep_mono_in.push((buffer, i));
+                            }
                         }
 
-                        let temp_buffer = resource_pool
-                            .get_temp_mono_audio_block_buffer(next_temp_mono_block_buffer);
-                        next_temp_mono_block_buffer += 1;
+                        // This shouldn't happen.
+                        if through_buffer.is_none() {
+                            debug_assert!(through_buffer.is_some());
+                            continue;
+                        }
+                        let through_buffer = through_buffer.unwrap();
 
                         let key = SumNodeKey {
                             node_id: node_id as u32,
@@ -423,31 +461,36 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             new_node
                         };
 
-                        tasks.push(AudioGraphTask {
+                        tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                             node: sum_node,
                             proc_buffers: ProcBuffers {
-                                mono_audio_in: MonoProcBuffers::new(sum_mono_audio_in),
-                                mono_audio_out: MonoProcBuffersMut::new(vec![(
-                                    Shared::clone(&temp_buffer),
+                                mono_through: MonoProcBuffersMut::new(smallvec![(
+                                    Shared::clone(&through_buffer),
                                     0,
                                 )]),
-                                stereo_audio_in: StereoProcBuffers::new(vec![]),
-                                stereo_audio_out: StereoProcBuffersMut::new(vec![]),
+                                indep_mono_in: MonoProcBuffers::new(sum_indep_mono_in),
+                                indep_mono_out: MonoProcBuffersMut::new(smallvec![]),
+                                stereo_through: StereoProcBuffersMut::new(smallvec![]),
+                                indep_stereo_in: StereoProcBuffers::new(smallvec![]),
+                                indep_stereo_out: StereoProcBuffersMut::new(smallvec![]),
                             },
-                        });
+                        }));
 
-                        mono_audio_in.push((temp_buffer, usize::from(port_ident.index)));
+                        mono_in.push((through_buffer, usize::from(port_ident.index)));
                     }
                     PortType::StereoAudio => {
-                        let mut sum_stereo_audio_in: Vec<(
-                            Shared<(
-                                AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
-                                DebugBufferID,
-                            )>,
-                            usize,
-                        )> = Vec::with_capacity(buffers.len());
+                        let mut through_buffer = None;
+                        let mut sum_indep_stereo_in: SmallVec<
+                            [(
+                                Shared<(
+                                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                                    DebugBufferID,
+                                )>,
+                                usize,
+                            ); SMALLVEC_ALLOC_BUFFERS],
+                        > = SmallVec::with_capacity(buffers.len());
 
-                        for (buf, delay_comp) in buffers.iter() {
+                        for (i, (buf, delay_comp)) in buffers.iter().enumerate() {
                             let buffer_id = buf.buffer_id;
                             if buffer_id > max_stereo_block_buffer_id {
                                 max_stereo_block_buffer_id = buffer_id;
@@ -472,12 +515,19 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                                 resource_pool.get_stereo_audio_block_buffer(buffer_id)
                             };
 
-                            sum_stereo_audio_in.push((buffer, usize::from(port_ident.index)));
+                            if i == 0 {
+                                through_buffer = Some(buffer);
+                            } else {
+                                sum_indep_stereo_in.push((buffer, i));
+                            }
                         }
 
-                        let temp_buffer = resource_pool
-                            .get_temp_stereo_audio_block_buffer(next_temp_stereo_block_buffer);
-                        next_temp_stereo_block_buffer += 1;
+                        // This shouldn't happen.
+                        if through_buffer.is_none() {
+                            debug_assert!(through_buffer.is_some());
+                            continue;
+                        }
+                        let through_buffer = through_buffer.unwrap();
 
                         let key = SumNodeKey {
                             node_id: node_id as u32,
@@ -531,20 +581,22 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                             new_node
                         };
 
-                        tasks.push(AudioGraphTask {
+                        tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                             node: sum_node,
                             proc_buffers: ProcBuffers {
-                                mono_audio_in: MonoProcBuffers::new(vec![]),
-                                mono_audio_out: MonoProcBuffersMut::new(vec![]),
-                                stereo_audio_in: StereoProcBuffers::new(sum_stereo_audio_in),
-                                stereo_audio_out: StereoProcBuffersMut::new(vec![(
-                                    Shared::clone(&temp_buffer),
+                                mono_through: MonoProcBuffersMut::new(smallvec![]),
+                                indep_mono_in: MonoProcBuffers::new(smallvec![]),
+                                indep_mono_out: MonoProcBuffersMut::new(smallvec![]),
+                                stereo_through: StereoProcBuffersMut::new(smallvec![(
+                                    Shared::clone(&through_buffer),
                                     0,
                                 )]),
+                                indep_stereo_in: StereoProcBuffers::new(sum_indep_stereo_in),
+                                indep_stereo_out: StereoProcBuffersMut::new(smallvec![]),
                             },
-                        });
+                        }));
 
-                        stereo_audio_in.push((temp_buffer, usize::from(port_ident.index)));
+                        stereo_in.push((through_buffer, usize::from(port_ident.index)));
                     }
                 }
             }
@@ -561,7 +613,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
 
                     let buffer = resource_pool.get_mono_audio_block_buffer(buffer_id);
 
-                    mono_audio_out.push((buffer, usize::from(port_ident.index)));
+                    mono_out.push((buffer, usize::from(port_ident.index)));
                 }
                 PortType::StereoAudio => {
                     if buffer_id > max_stereo_block_buffer_id {
@@ -570,7 +622,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
 
                     let buffer = resource_pool.get_stereo_audio_block_buffer(buffer_id);
 
-                    stereo_audio_out.push((buffer, usize::from(port_ident.index)));
+                    stereo_out.push((buffer, usize::from(port_ident.index)));
                 }
             }
         }
@@ -590,7 +642,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
         let mut found_node = None;
         if let Some(node) = resource_pool.nodes.get(node_id).as_ref() {
             if let Some(node) = node {
-                found_node = Some(Shared::clone(node));
+                found_node = Some((Shared::clone(&node.0), node.1));
             }
         }
 
@@ -602,7 +654,7 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
             );
         }
 
-        if let Some(node) = found_node {
+        if let Some((node, (mono_through_ports, stereo_through_ports))) = found_node {
             if entry.node == graph.root_node_ref {
                 // In theory the root node should always be the last node in the graph, so
                 // it should be safe to add an extra output buffer.
@@ -610,21 +662,175 @@ pub(crate) fn compile_graph<GlobalData: Send + Sync + 'static, const MAX_BLOCKSI
                 let buffer =
                     resource_pool.get_stereo_audio_block_buffer(max_stereo_block_buffer_id);
 
-                stereo_audio_out.push((Shared::clone(&buffer), 0));
+                stereo_out.push((Shared::clone(&buffer), 0));
                 master_out_buffer = Some(buffer);
 
                 root_node_scheduled = true;
             }
 
-            tasks.push(AudioGraphTask {
+            let mut mono_through: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    usize,
+                ); SMALLVEC_ALLOC_BUFFERS],
+            > = SmallVec::new();
+            let mut stereo_through: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    usize,
+                ); SMALLVEC_ALLOC_BUFFERS],
+            > = SmallVec::new();
+
+            let mut copy_mono_buffers: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    Shared<(
+                        AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                ); SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
+            let mut copy_stereo_buffers: SmallVec<
+                [(
+                    Shared<(
+                        AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                    Shared<(
+                        AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                        DebugBufferID,
+                    )>,
+                ); SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
+
+            let mut clear_mono_buffers: SmallVec<
+                [Shared<(
+                    AtomicRefCell<MonoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>; SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
+            let mut clear_stereo_buffers: SmallVec<
+                [Shared<(
+                    AtomicRefCell<StereoBlockBuffer<f32, MAX_BLOCKSIZE>>,
+                    DebugBufferID,
+                )>; SMALLVEC_ALLOC_MPR_BUFFERS],
+            > = SmallVec::new();
+
+            // TODO: Proper process_replacing() behavior instead of just copying buffers behind
+            // the scenes.
+            for i in 0..mono_through_ports as usize {
+                let mut in_buffer_i = None;
+                let mut out_buffer_i = None;
+                for (buf_i, (_, port_id)) in mono_in.iter().enumerate() {
+                    if *port_id == i {
+                        in_buffer_i = Some(buf_i);
+                        break;
+                    }
+                }
+                for (buf_i, (_, port_id)) in mono_out.iter().enumerate() {
+                    if *port_id == i {
+                        out_buffer_i = Some(buf_i);
+                        break;
+                    }
+                }
+
+                if let Some(out_buffer_i) = out_buffer_i {
+                    if let Some(in_buffer_i) = in_buffer_i {
+                        let in_buffer = mono_in.remove(in_buffer_i);
+                        let out_buffer = mono_out.remove(out_buffer_i);
+
+                        copy_mono_buffers.push((in_buffer.0, Shared::clone(&out_buffer.0)));
+                        mono_through.push(out_buffer);
+                    } else {
+                        let out_buffer = mono_out.remove(out_buffer_i);
+
+                        clear_mono_buffers.push(Shared::clone(&out_buffer.0));
+                        mono_through.push(out_buffer);
+                    }
+                } else if let Some(in_buffer_i) = in_buffer_i {
+                    let in_buffer = mono_in.remove(in_buffer_i);
+
+                    mono_through.push(in_buffer);
+                }
+            }
+            for i in 0..stereo_through_ports as usize {
+                let mut in_buffer_i = None;
+                let mut out_buffer_i = None;
+                for (buf_i, (_, port_id)) in stereo_in.iter().enumerate() {
+                    if *port_id == i {
+                        in_buffer_i = Some(buf_i);
+                        break;
+                    }
+                }
+                for (buf_i, (_, port_id)) in stereo_out.iter().enumerate() {
+                    if *port_id == i {
+                        out_buffer_i = Some(buf_i);
+                        break;
+                    }
+                }
+
+                if let Some(out_buffer_i) = out_buffer_i {
+                    if let Some(in_buffer_i) = in_buffer_i {
+                        let in_buffer = stereo_in.remove(in_buffer_i);
+                        let out_buffer = stereo_out.remove(out_buffer_i);
+
+                        copy_stereo_buffers.push((in_buffer.0, Shared::clone(&out_buffer.0)));
+                        stereo_through.push(out_buffer);
+                    } else {
+                        let out_buffer = stereo_out.remove(out_buffer_i);
+
+                        clear_stereo_buffers.push(Shared::clone(&out_buffer.0));
+                        stereo_through.push(out_buffer);
+                    }
+                } else if let Some(in_buffer_i) = in_buffer_i {
+                    let in_buffer = stereo_in.remove(in_buffer_i);
+
+                    stereo_through.push(in_buffer);
+                }
+            }
+
+            if !clear_mono_buffers.is_empty() {
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::ClearMonoBuffers(clear_mono_buffers),
+                ));
+            }
+            if !clear_stereo_buffers.is_empty() {
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::ClearStereoBuffers(clear_stereo_buffers),
+                ));
+            }
+
+            if !copy_mono_buffers.is_empty() {
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::CopyMonoBuffers(copy_mono_buffers),
+                ));
+            }
+            if !copy_stereo_buffers.is_empty() {
+                tasks.push(AudioGraphTask::MimicProcessReplacing(
+                    MimicProcessReplacingTask::CopyStereoBuffers(copy_stereo_buffers),
+                ));
+            }
+
+            tasks.push(AudioGraphTask::Node(AudioGraphNodeTask {
                 node,
                 proc_buffers: ProcBuffers {
-                    mono_audio_in: MonoProcBuffers::new(mono_audio_in),
-                    mono_audio_out: MonoProcBuffersMut::new(mono_audio_out),
-                    stereo_audio_in: StereoProcBuffers::new(stereo_audio_in),
-                    stereo_audio_out: StereoProcBuffersMut::new(stereo_audio_out),
+                    mono_through: MonoProcBuffersMut::new(mono_through),
+                    indep_mono_in: MonoProcBuffers::new(mono_in),
+                    indep_mono_out: MonoProcBuffersMut::new(mono_out),
+                    stereo_through: StereoProcBuffersMut::new(stereo_through),
+                    indep_stereo_in: StereoProcBuffers::new(stereo_in),
+                    indep_stereo_out: StereoProcBuffersMut::new(stereo_out),
                 },
-            });
+            }));
         } else {
             log::error!("Schedule error: Node with ID {} does not exist", node_id);
             debug_assert!(

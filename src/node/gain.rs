@@ -44,10 +44,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "MonoGainNode"
     }
 
-    fn mono_audio_in_ports(&self) -> u32 {
-        1
-    }
-    fn mono_audio_out_ports(&self) -> u32 {
+    fn mono_through_ports(&self) -> u32 {
         1
     }
 
@@ -57,37 +54,25 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.mono_audio_in.is_empty() || buffers.mono_audio_out.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
-            return;
-        }
+        if let Some(mut buf) = buffers.mono_through.first_mut() {
+            let frames = proc_info.frames();
+            let gain_amp = self.gain_amp.smoothed(frames);
 
-        let frames = proc_info.frames();
+            // TODO: SIMD
 
-        let gain_amp = self.gain_amp.smoothed(frames);
-
-        // Won't panic because we checked these were not empty earlier.
-        let src = &*buffers.mono_audio_in.buffer(0).unwrap();
-        let dst = &mut *buffers.mono_audio_out.buffer_mut(0).unwrap();
-
-        // TODO: SIMD
-
-        if gain_amp.is_smoothing() {
-            for i in 0..frames {
-                dst.buf[i] = src.buf[i] * gain_amp[i];
-            }
-        } else {
-            // We can optimize by using a constant gain (better SIMD load efficiency).
-            let gain = gain_amp[0];
-
-            if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
+            if gain_amp.is_smoothing() {
                 for i in 0..frames {
-                    dst.buf[i] = src.buf[i] * gain;
+                    buf.buf[i] *= gain_amp[i];
                 }
             } else {
-                // Simply copy the frames.
-                dst.copy_frames_from(src, frames);
+                // We can optimize by using a constant gain (better SIMD load efficiency).
+                let gain = gain_amp[0];
+
+                if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
+                    for i in 0..frames {
+                        buf.buf[i] *= gain;
+                    }
+                } // else nothing to do
             }
         }
     }
@@ -130,10 +115,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "MonoGainNode"
     }
 
-    fn stereo_audio_in_ports(&self) -> u32 {
-        1
-    }
-    fn stereo_audio_out_ports(&self) -> u32 {
+    fn stereo_through_ports(&self) -> u32 {
         1
     }
 
@@ -143,39 +125,27 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.stereo_audio_in.is_empty() || buffers.stereo_audio_out.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
-            return;
-        }
+        if let Some(mut buf) = buffers.stereo_through.first_mut() {
+            let frames = proc_info.frames();
+            let gain_amp = self.gain_amp.smoothed(frames);
 
-        let frames = proc_info.frames();
+            // TODO: SIMD
 
-        let gain_amp = self.gain_amp.smoothed(frames);
-
-        // Won't panic because we checked these were not empty earlier.
-        let src = &*buffers.stereo_audio_in.buffer(0).unwrap();
-        let dst = &mut *buffers.stereo_audio_out.buffer_mut(0).unwrap();
-
-        // TODO: SIMD
-
-        if gain_amp.is_smoothing() {
-            for i in 0..frames {
-                dst.left[i] = src.left[i] * gain_amp[i];
-                dst.right[i] = src.right[i] * gain_amp[i];
-            }
-        } else {
-            // We can optimize by using a constant gain (better SIMD load efficiency).
-            let gain = gain_amp[0];
-
-            if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
+            if gain_amp.is_smoothing() {
                 for i in 0..frames {
-                    dst.left[i] = src.left[i] * gain;
-                    dst.right[i] = src.right[i] * gain;
+                    buf.left[i] *= gain_amp[i];
+                    buf.right[i] *= gain_amp[i];
                 }
             } else {
-                // Simply copy the frames.
-                dst.copy_frames_from(src, frames);
+                // We can optimize by using a constant gain (better SIMD load efficiency).
+                let gain = gain_amp[0];
+
+                if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
+                    for i in 0..frames {
+                        buf.left[i] *= gain;
+                        buf.right[i] *= gain;
+                    }
+                } // else nothing to do
             }
         }
     }

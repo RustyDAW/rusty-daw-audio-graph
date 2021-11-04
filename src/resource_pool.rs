@@ -45,12 +45,13 @@ pub(crate) struct GraphResourcePool<GlobalData: Send + Sync + 'static, const MAX
     // cheaply clone and reconstruct a new schedule to send to the rt thread whenever the
     // graph is recompiled (only need to copy pointers instead of whole Vecs).
     pub(crate) nodes: Vec<
-        Option<
+        Option<(
             Shared<(
                 AtomicRefCell<Box<dyn AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>>,
                 DebugNodeID,
             )>,
-        >,
+            (u32, u32),
+        )>,
     >,
     pub(crate) mono_block_buffers: Vec<
         Shared<(
@@ -148,15 +149,17 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         node_ref: NodeRef,
         new_node: Box<dyn AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>,
         node_id: DebugNodeID,
+        mono_through_ports: u32,
+        stereo_through_ports: u32,
     ) {
         let index: usize = node_ref.into();
         while index >= self.nodes.len() {
             self.nodes.push(None);
         }
 
-        self.nodes[index] = Some(Shared::new(
-            &self.coll_handle,
-            (AtomicRefCell::new(new_node), node_id),
+        self.nodes[index] = Some((
+            Shared::new(&self.coll_handle, (AtomicRefCell::new(new_node), node_id)),
+            (mono_through_ports, stereo_through_ports),
         ));
     }
 

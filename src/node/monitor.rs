@@ -54,10 +54,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "MonoMonitorNode"
     }
 
-    fn mono_audio_in_ports(&self) -> u32 {
-        1
-    }
-    fn mono_audio_out_ports(&self) -> u32 {
+    fn mono_through_ports(&self) -> u32 {
         1
     }
 
@@ -67,23 +64,12 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.mono_audio_in.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
-            return;
-        }
+        if let Some(buf) = buffers.mono_through.first() {
+            let frames = proc_info.frames();
 
-        // Won't panic because we checked this was not empty earlier.
-        let src = &*buffers.mono_audio_in.buffer(0).unwrap();
-
-        let frames = proc_info.frames();
-
-        if self.active.load(Ordering::Relaxed) {
-            self.tx.push_slice(&src.buf[0..frames]);
-        }
-
-        if let Some(mut mono_audio_out) = buffers.mono_audio_out.buffer_mut(0) {
-            mono_audio_out.copy_frames_from(&*src, frames);
+            if self.active.load(Ordering::Relaxed) {
+                self.tx.push_slice(&buf.buf[0..frames]);
+            }
         }
     }
 }
@@ -144,10 +130,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "StereoMonitorNode"
     }
 
-    fn stereo_audio_in_ports(&self) -> u32 {
-        1
-    }
-    fn stereo_audio_out_ports(&self) -> u32 {
+    fn stereo_through_ports(&self) -> u32 {
         1
     }
 
@@ -157,24 +140,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.stereo_audio_in.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
-            return;
-        }
+        if let Some(buf) = buffers.stereo_through.first() {
+            let frames = proc_info.frames();
 
-        // Won't panic because we checked this was not empty earlier.
-        let src = &*buffers.stereo_audio_in.buffer(0).unwrap();
-
-        let frames = proc_info.frames();
-
-        if self.active.load(Ordering::Relaxed) {
-            self.left_tx.push_slice(&src.left[0..frames]);
-            self.right_tx.push_slice(&src.right[0..frames]);
-        }
-
-        if let Some(mut stereo_audio_out) = buffers.stereo_audio_out.buffer_mut(0) {
-            stereo_audio_out.copy_frames_from(&*src, frames);
+            if self.active.load(Ordering::Relaxed) {
+                self.left_tx.push_slice(&buf.left[0..frames]);
+                self.right_tx.push_slice(&buf.right[0..frames]);
+            }
         }
     }
 }

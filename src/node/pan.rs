@@ -79,10 +79,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "StereoGainPanNode"
     }
 
-    fn stereo_audio_in_ports(&self) -> u32 {
-        1
-    }
-    fn stereo_audio_out_ports(&self) -> u32 {
+    fn stereo_through_ports(&self) -> u32 {
         1
     }
 
@@ -92,67 +89,63 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.stereo_audio_in.is_empty() || buffers.stereo_audio_out.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
-            return;
-        }
+        if let Some(mut buf) = buffers.stereo_through.first_mut() {
+            let frames = proc_info.frames();
 
-        let frames = proc_info.frames();
+            let gain_amp = self.gain_amp.smoothed(frames);
+            let pan = self.pan.smoothed(frames);
 
-        let gain_amp = self.gain_amp.smoothed(frames);
-        let pan = self.pan.smoothed(frames);
+            // TODO: SIMD
 
-        // Won't panic because we checked these were not empty earlier.
-        let src = &*buffers.stereo_audio_in.buffer(0).unwrap();
-        let dst = &mut *buffers.stereo_audio_out.buffer_mut(0).unwrap();
+            if pan.is_smoothing() {
+                // Need to calculate left and right gain per sample.
+                match self.pan_law {
+                    PanLaw::Linear => {
+                        // TODO: I'm not sure this is actually linear pan-law. I'm just getting something down for now.
 
-        // TODO: SIMD
+                        if gain_amp.is_smoothing() {
+                            for i in 0..frames {
+                                buf.left[i] *= (1.0 - pan.values[i]) * gain_amp.values[i];
+                                buf.right[i] *= pan.values[i] * gain_amp.values[i];
+                            }
+                        } else {
+                            // We can optimize by using a constant gain (better SIMD load efficiency).
+                            let gain = gain_amp.values[0];
 
-        if pan.is_smoothing() {
-            // Need to calculate left and right gain per sample.
-            match self.pan_law {
-                PanLaw::Linear => {
-                    // TODO: I'm not sure this is actually linear pan-law. I'm just getting something down for now.
-
-                    if gain_amp.is_smoothing() {
-                        for i in 0..frames {
-                            dst.left[i] = src.left[i] * (1.0 - pan.values[i]) * gain_amp.values[i];
-                            dst.right[i] = src.right[i] * pan.values[i] * gain_amp.values[i];
-                        }
-                    } else {
-                        // We can optimize by using a constant gain (better SIMD load efficiency).
-                        let gain = gain_amp.values[0];
-
-                        for i in 0..frames {
-                            dst.left[i] = src.left[i] * (1.0 - pan.values[i]) * gain;
-                            dst.right[i] = src.right[i] * pan.values[i] * gain;
+                            for i in 0..frames {
+                                buf.left[i] *= (1.0 - pan.values[i]) * gain;
+                                buf.right[i] *= pan.values[i] * gain;
+                            }
                         }
                     }
                 }
-            }
-        } else {
-            // We can optimize by only calculating left and right gain once.
-            let (left_amp, right_amp) = match self.pan_law {
-                PanLaw::Linear => {
-                    // TODO: I'm not sure this is actually linear pan-law. I'm just getting something down for now.
-                    (1.0 - pan.values[0], pan.values[0])
-                }
-            };
-
-            if gain_amp.is_smoothing() {
-                for i in 0..frames {
-                    dst.left[i] = src.left[i] * left_amp * gain_amp.values[i];
-                    dst.right[i] = src.right[i] * right_amp * gain_amp.values[i];
-                }
             } else {
-                // We can optimize by pre-multiplying gain to the pan.
-                let left_amp = left_amp * gain_amp.values[0];
-                let right_amp = right_amp * gain_amp.values[0];
+                // We can optimize by only calculating left and right gain once.
+                let (left_amp, right_amp) = match self.pan_law {
+                    PanLaw::Linear => {
+                        // TODO: I'm not sure this is actually linear pan-law. I'm just getting something down for now.
+                        (1.0 - pan.values[0], pan.values[0])
+                    }
+                };
 
-                for i in 0..frames {
-                    dst.left[i] = src.left[i] * left_amp;
-                    dst.right[i] = src.right[i] * right_amp;
+                if gain_amp.is_smoothing() {
+                    for i in 0..frames {
+                        buf.left[i] *= left_amp * gain_amp.values[i];
+                        buf.right[i] *= right_amp * gain_amp.values[i];
+                    }
+                } else {
+                    // We can optimize by pre-multiplying gain to the pan.
+                    let left_amp = left_amp * gain_amp.values[0];
+                    let right_amp = right_amp * gain_amp.values[0];
+
+                    if !(left_amp >= 1.0 - f32::EPSILON && left_amp <= 1.0 + f32::EPSILON)
+                        || !(right_amp >= 1.0 - f32::EPSILON && right_amp <= 1.0 + f32::EPSILON)
+                    {
+                        for i in 0..frames {
+                            buf.left[i] *= left_amp;
+                            buf.right[i] *= right_amp;
+                        }
+                    } // else nothing to do
                 }
             }
         }

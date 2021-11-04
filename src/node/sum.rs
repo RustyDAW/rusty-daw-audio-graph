@@ -17,11 +17,21 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "MonoSumNode"
     }
 
-    fn mono_audio_in_ports(&self) -> u32 {
-        self.num_inputs
+    // The first port is a "through" port for efficiency. All the rest
+    // are "independent" ports.
+    fn mono_through_ports(&self) -> u32 {
+        if self.num_inputs == 0 {
+            0
+        } else {
+            1
+        }
     }
-    fn mono_audio_out_ports(&self) -> u32 {
-        1
+    fn indep_mono_in_ports(&self) -> u32 {
+        if self.num_inputs == 0 {
+            0
+        } else {
+            self.num_inputs - 1
+        }
     }
 
     fn process(
@@ -30,32 +40,32 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.mono_audio_out.is_empty() {
+        if buffers.mono_through.is_empty() {
             return;
         }
 
         let frames = proc_info.frames();
-
         // Won't panic because we checked this was not empty earlier.
-        let dst = &mut *buffers.mono_audio_out.buffer_mut(0).unwrap();
-
-        let audio_in = &buffers.mono_audio_in;
+        let mut through = buffers.mono_through.first_mut().unwrap();
+        let audio_in = &buffers.indep_mono_in;
 
         // TODO: SIMD
 
         match audio_in.len() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            0 => dst.clear_frames(frames),
+            0 => return,
             1 => {
-                // Just copy.
-                dst.copy_frames_from(&*audio_in.buffer(0).unwrap(), frames);
+                let src_1 = audio_in.buffer(0).unwrap();
+
+                for i in 0..frames {
+                    through[i] += src_1[i];
+                }
             }
             2 => {
                 let src_1 = audio_in.buffer(0).unwrap();
                 let src_2 = audio_in.buffer(1).unwrap();
 
                 for i in 0..frames {
-                    dst[i] = src_1[i] + src_2[i];
+                    through[i] += src_1[i] + src_2[i];
                 }
             }
             3 => {
@@ -64,7 +74,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_3 = audio_in.buffer(2).unwrap();
 
                 for i in 0..frames {
-                    dst[i] = src_1[i] + src_2[i] + src_3[i];
+                    through[i] += src_1[i] + src_2[i] + src_3[i];
                 }
             }
             4 => {
@@ -74,7 +84,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_4 = audio_in.buffer(3).unwrap();
 
                 for i in 0..frames {
-                    dst[i] = src_1[i] + src_2[i] + src_3[i] + src_4[i];
+                    through[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i];
                 }
             }
             5 => {
@@ -85,7 +95,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_5 = audio_in.buffer(4).unwrap();
 
                 for i in 0..frames {
-                    dst[i] = src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i];
+                    through[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i];
                 }
             }
             6 => {
@@ -97,7 +107,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_6 = audio_in.buffer(5).unwrap();
 
                 for i in 0..frames {
-                    dst[i] = src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i] + src_6[i];
+                    through[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i] + src_6[i];
                 }
             }
             7 => {
@@ -110,41 +120,17 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_7 = audio_in.buffer(6).unwrap();
 
                 for i in 0..frames {
-                    dst[i] =
+                    through[i] +=
                         src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i] + src_6[i] + src_7[i];
-                }
-            }
-            8 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
-                let src_6 = audio_in.buffer(5).unwrap();
-                let src_7 = audio_in.buffer(6).unwrap();
-                let src_8 = audio_in.buffer(7).unwrap();
-
-                for i in 0..frames {
-                    dst[i] = src_1[i]
-                        + src_2[i]
-                        + src_3[i]
-                        + src_4[i]
-                        + src_5[i]
-                        + src_6[i]
-                        + src_7[i]
-                        + src_8[i];
                 }
             }
             // TODO: Additional optimized loops?
             num_inputs => {
-                // Copy the first buffer.
-                dst.copy_frames_from(&*audio_in.buffer(0).unwrap(), frames);
-
                 for ch_i in 1..num_inputs {
                     let src = audio_in.buffer(ch_i).unwrap();
 
                     for i in 0..frames {
-                        dst[i] += src[i];
+                        through[i] += src[i];
                     }
                 }
             }
@@ -169,11 +155,21 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         "StereoSumNode"
     }
 
-    fn stereo_audio_in_ports(&self) -> u32 {
-        self.num_stereo_inputs
+    // The first port is a "through" port for efficiency. All the rest
+    // are "independent" ports.
+    fn stereo_through_ports(&self) -> u32 {
+        if self.num_stereo_inputs == 0 {
+            0
+        } else {
+            1
+        }
     }
-    fn stereo_audio_out_ports(&self) -> u32 {
-        1
+    fn indep_stereo_in_ports(&self) -> u32 {
+        if self.num_stereo_inputs == 0 {
+            0
+        } else {
+            self.num_stereo_inputs - 1
+        }
     }
 
     fn process(
@@ -182,35 +178,34 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.stereo_audio_out.is_empty() {
+        if buffers.stereo_through.is_empty() {
             return;
         }
 
         let frames = proc_info.frames();
-
         // Won't panic because we checked this was not empty earlier.
-        let dst = &mut *buffers.stereo_audio_out.buffer_mut(0).unwrap();
-
-        let audio_in = &buffers.stereo_audio_in;
+        let mut through = buffers.stereo_through.first_mut().unwrap();
+        let audio_in = &buffers.indep_stereo_in;
 
         // TODO: SIMD
 
         match audio_in.len() {
-            0 => {
-                // As per the spec, all unused audio output buffers must be cleared to 0.0.
-                dst.clear_frames(frames);
-            }
+            0 => return,
             1 => {
-                // Just copy.
-                dst.copy_frames_from(&*audio_in.buffer(0).unwrap(), frames);
+                let src_1 = audio_in.buffer(0).unwrap();
+
+                for i in 0..frames {
+                    through.left[i] += src_1.left[i];
+                    through.right[i] += src_1.right[i];
+                }
             }
             2 => {
                 let src_1 = audio_in.buffer(0).unwrap();
                 let src_2 = audio_in.buffer(1).unwrap();
 
                 for i in 0..frames {
-                    dst.left[i] = src_1.left[i] + src_2.left[i];
-                    dst.right[i] = src_1.right[i] + src_2.right[i];
+                    through.left[i] += src_1.left[i] + src_2.left[i];
+                    through.right[i] += src_1.right[i] + src_2.right[i];
                 }
             }
             3 => {
@@ -219,8 +214,8 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_3 = audio_in.buffer(2).unwrap();
 
                 for i in 0..frames {
-                    dst.left[i] = src_1.left[i] + src_2.left[i] + src_3.left[i];
-                    dst.right[i] = src_1.right[i] + src_2.right[i] + src_3.right[i];
+                    through.left[i] += src_1.left[i] + src_2.left[i] + src_3.left[i];
+                    through.right[i] += src_1.right[i] + src_2.right[i] + src_3.right[i];
                 }
             }
             4 => {
@@ -230,8 +225,9 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_4 = audio_in.buffer(3).unwrap();
 
                 for i in 0..frames {
-                    dst.left[i] = src_1.left[i] + src_2.left[i] + src_3.left[i] + src_4.left[i];
-                    dst.right[i] =
+                    through.left[i] +=
+                        src_1.left[i] + src_2.left[i] + src_3.left[i] + src_4.left[i];
+                    through.right[i] +=
                         src_1.right[i] + src_2.right[i] + src_3.right[i] + src_4.right[i];
                 }
             }
@@ -243,12 +239,12 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_5 = audio_in.buffer(4).unwrap();
 
                 for i in 0..frames {
-                    dst.left[i] = src_1.left[i]
+                    through.left[i] += src_1.left[i]
                         + src_2.left[i]
                         + src_3.left[i]
                         + src_4.left[i]
                         + src_5.left[i];
-                    dst.right[i] = src_1.right[i]
+                    through.right[i] += src_1.right[i]
                         + src_2.right[i]
                         + src_3.right[i]
                         + src_4.right[i]
@@ -264,13 +260,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_6 = audio_in.buffer(5).unwrap();
 
                 for i in 0..frames {
-                    dst.left[i] = src_1.left[i]
+                    through.left[i] += src_1.left[i]
                         + src_2.left[i]
                         + src_3.left[i]
                         + src_4.left[i]
                         + src_5.left[i]
                         + src_6.left[i];
-                    dst.right[i] = src_1.right[i]
+                    through.right[i] += src_1.right[i]
                         + src_2.right[i]
                         + src_3.right[i]
                         + src_4.right[i]
@@ -288,14 +284,14 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 let src_7 = audio_in.buffer(6).unwrap();
 
                 for i in 0..frames {
-                    dst.left[i] = src_1.left[i]
+                    through.left[i] += src_1.left[i]
                         + src_2.left[i]
                         + src_3.left[i]
                         + src_4.left[i]
                         + src_5.left[i]
                         + src_6.left[i]
                         + src_7.left[i];
-                    dst.right[i] = src_1.right[i]
+                    through.right[i] += src_1.right[i]
                         + src_2.right[i]
                         + src_3.right[i]
                         + src_4.right[i]
@@ -304,47 +300,14 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                         + src_7.right[i];
                 }
             }
-            8 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
-                let src_6 = audio_in.buffer(5).unwrap();
-                let src_7 = audio_in.buffer(6).unwrap();
-                let src_8 = audio_in.buffer(7).unwrap();
-
-                for i in 0..frames {
-                    dst.left[i] = src_1.left[i]
-                        + src_2.left[i]
-                        + src_3.left[i]
-                        + src_4.left[i]
-                        + src_5.left[i]
-                        + src_6.left[i]
-                        + src_7.left[i]
-                        + src_8.left[i];
-                    dst.right[i] = src_1.right[i]
-                        + src_2.right[i]
-                        + src_3.right[i]
-                        + src_4.right[i]
-                        + src_5.right[i]
-                        + src_6.right[i]
-                        + src_7.right[i]
-                        + src_8.right[i];
-                }
-            }
             // TODO: Additional optimized loops?
             num_stereo_inputs => {
-                // Copy the first channel.
-                dst.copy_frames_from(&*audio_in.buffer(0).unwrap(), frames);
-
-                // Add the rest of the channels.
                 for ch_i in 1..num_stereo_inputs {
                     let src = audio_in.buffer(ch_i).unwrap();
 
                     for i in 0..frames {
-                        dst.left[i] += src.left[i];
-                        dst.right[i] += src.right[i];
+                        through.left[i] += src.left[i];
+                        through.right[i] += src.right[i];
                     }
                 }
             }

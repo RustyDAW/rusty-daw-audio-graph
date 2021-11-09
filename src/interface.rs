@@ -4,10 +4,14 @@ use rusty_daw_core::SampleRate;
 use super::graph_state::GraphState;
 use super::node::gain::{GainNodeHandle, StereoGainNode};
 use super::resource_pool::GraphResourcePool;
-use super::{AudioGraphNode, CompiledGraph, DebugNodeID, NodeRef, NodeState, PortType};
+use super::verifier::Verifier;
+use super::{AudioGraphExecutor, AudioGraphNode, NodeRef, NodeState, PortType};
+use super::{CompilerError, CompilerWarning};
+use crate::resource_pool::{DebugNodeID, DebugNodeType};
 
 pub struct GraphInterface<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize> {
-    pub(crate) shared_graph_state: Shared<SharedCell<CompiledGraph<GlobalData, MAX_BLOCKSIZE>>>,
+    pub(crate) shared_graph_state:
+        Shared<SharedCell<AudioGraphExecutor<GlobalData, MAX_BLOCKSIZE>>>,
     pub(crate) resource_pool: GraphResourcePool<GlobalData, MAX_BLOCKSIZE>,
     pub(crate) graph_state: GraphState,
 
@@ -19,6 +23,8 @@ pub struct GraphInterface<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE
 
     pub(crate) next_delay_comp_node_id: u64,
     pub(crate) next_sum_node_id: u64,
+
+    pub(crate) verifier: Verifier<GlobalData, MAX_BLOCKSIZE>,
 }
 
 impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
@@ -30,38 +36,42 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         global_data: GlobalData,
     ) -> (
         Self,
-        Shared<SharedCell<CompiledGraph<GlobalData, MAX_BLOCKSIZE>>>,
+        Shared<SharedCell<AudioGraphExecutor<GlobalData, MAX_BLOCKSIZE>>>,
     ) {
         let collector = Collector::new();
 
         let (shared_graph_state, mut resource_pool) =
-            CompiledGraph::new(collector.handle(), sample_rate, global_data);
+            AudioGraphExecutor::new(collector.handle(), sample_rate, global_data);
         let rt_shared_state = Shared::clone(&shared_graph_state);
 
         let mut graph_state = GraphState::new();
 
         let (root_node, _root_node_handle) = StereoGainNode::new(0.0, -90.0, 12.0, sample_rate);
 
-        let root_through_ports = (
-            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::mono_through_ports(&root_node),
-            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::stereo_through_ports(&root_node),
+        let root_replacing_ports = (
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::mono_replacing_ports(&root_node),
+            <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::stereo_replacing_ports(&root_node),
         );
 
         let root_node_ref = graph_state.add_new_node(
-            root_through_ports.0,
+            root_replacing_ports.0,
             <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::indep_mono_in_ports(&root_node),
             <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::indep_mono_out_ports(&root_node),
-            root_through_ports.1,
+            root_replacing_ports.1,
             <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::indep_stereo_in_ports(&root_node),
             <StereoGainNode<MAX_BLOCKSIZE> as AudioGraphNode<GlobalData, MAX_BLOCKSIZE>>::indep_stereo_out_ports(&root_node),
         );
 
-        resource_pool.add_node(
+        resource_pool.add_user_node(
             root_node_ref,
             Box::new(root_node),
-            DebugNodeID::Root,
-            root_through_ports.0,
-            root_through_ports.1,
+            DebugNodeID {
+                node_type: DebugNodeType::Root,
+                index: 0,
+                name: None,
+            },
+            root_replacing_ports.0,
+            root_replacing_ports.1,
         );
 
         (
@@ -75,6 +85,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 _root_node_handle,
                 next_delay_comp_node_id: 0,
                 next_sum_node_id: 0,
+                verifier: Verifier::new(),
             },
             rt_shared_state,
         )
@@ -89,7 +100,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     pub fn modify_graph<F: FnOnce(GraphStateRef<'_, GlobalData, MAX_BLOCKSIZE>)>(
         &mut self,
         f: F,
-    ) -> Result<(), ()> {
+    ) -> Result<Option<CompilerWarning>, CompilerError> {
         let graph_state_ref = GraphStateRef {
             resource_pool: &mut self.resource_pool,
             graph: &mut self.graph_state,
@@ -119,39 +130,46 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     ) -> NodeRef {
         let debug_name = node.debug_name();
 
-        let mono_through_ports = node.mono_through_ports();
+        let mono_replacing_ports = node.mono_replacing_ports();
         let indep_mono_in_ports = node.indep_mono_in_ports();
         let indep_mono_out_ports = node.indep_mono_out_ports();
-        let stereo_through_ports = node.stereo_through_ports();
+        let stereo_replacing_ports = node.stereo_replacing_ports();
         let indep_stereo_in_ports = node.indep_stereo_in_ports();
         let indep_stereo_out_ports = node.indep_stereo_out_ports();
 
         let delay = node.delay();
 
         let node_ref = self.graph.add_new_node(
-            mono_through_ports,
+            mono_replacing_ports,
             indep_mono_in_ports,
             indep_mono_out_ports,
-            stereo_through_ports,
+            stereo_replacing_ports,
             indep_stereo_in_ports,
             indep_stereo_out_ports,
         );
 
-        self.resource_pool.add_node(
+        let index: usize = node_ref.into();
+        let node_id = DebugNodeID {
+            node_type: DebugNodeType::User,
+            index: index as u64,
+            name: Some(debug_name),
+        };
+
+        self.resource_pool.add_user_node(
             node_ref,
             node,
-            DebugNodeID::User((node_ref, debug_name)),
-            mono_through_ports,
-            stereo_through_ports,
+            node_id,
+            mono_replacing_ports,
+            stereo_replacing_ports,
         );
 
         log::debug!(
-            "Added node to graph: node id: {:?} | # mono through: {} | # indep mono in: {} | # indep mono out: {} | # stereo through: {} | # indep stereo in {} | # indep stereo out: {}, delay: {}",
-            DebugNodeID::User((node_ref, debug_name)),
-            mono_through_ports,
+            "Added node to graph: node id: {:?} | # mono replacing: {} | # indep mono in: {} | # indep mono out: {} | # stereo replacing: {} | # indep stereo in {} | # indep stereo out: {}, delay: {}",
+            node_id,
+            mono_replacing_ports,
             indep_mono_in_ports,
             indep_mono_out_ports,
-            stereo_through_ports,
+            stereo_replacing_ports,
             indep_stereo_in_ports,
             indep_stereo_out_ports,
             delay,
@@ -191,21 +209,21 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let node_index: usize = node_ref.into();
         let old_node = self
             .resource_pool
-            .nodes
+            .user_nodes
             .get(node_index)
             .ok_or_else(|| audio_graph::Error::NodeDoesNotExist)?;
         let old_node = &old_node
             .as_ref()
             .ok_or_else(|| audio_graph::Error::NodeDoesNotExist)?;
 
-        let old_debug_id = old_node.1;
+        let old_debug_id = old_node.node.debug_id();
 
         let new_debug_name = new_node.debug_name();
 
-        let new_mono_through_ports = new_node.mono_through_ports();
+        let new_mono_replacing_ports = new_node.mono_replacing_ports();
         let new_indep_mono_in_ports = new_node.indep_mono_in_ports();
         let new_indep_mono_out_ports = new_node.indep_mono_out_ports();
-        let new_stereo_through_ports = new_node.stereo_through_ports();
+        let new_stereo_replacing_ports = new_node.stereo_replacing_ports();
         let new_indep_stereo_in_ports = new_node.indep_stereo_in_ports();
         let new_indep_stereo_out_ports = new_node.indep_stereo_out_ports();
 
@@ -213,31 +231,38 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
 
         self.graph.set_num_ports(
             node_ref,
-            new_mono_through_ports,
+            new_mono_replacing_ports,
             new_indep_mono_in_ports,
             new_indep_mono_out_ports,
-            new_stereo_through_ports,
+            new_stereo_replacing_ports,
             new_indep_stereo_in_ports,
             new_indep_stereo_out_ports,
         )?;
 
-        self.resource_pool.remove_node(node_ref);
-        self.resource_pool.add_node(
+        let index: usize = node_ref.into();
+        let new_node_id = DebugNodeID {
+            node_type: DebugNodeType::User,
+            index: index as u64,
+            name: Some(new_debug_name),
+        };
+
+        self.resource_pool.remove_user_node(node_ref);
+        self.resource_pool.add_user_node(
             node_ref,
             new_node,
-            DebugNodeID::User((node_ref, new_debug_name)),
-            new_mono_through_ports,
-            new_stereo_through_ports,
+            new_node_id,
+            new_mono_replacing_ports,
+            new_stereo_replacing_ports,
         );
 
         log::debug!(
-            "Replaced node in graph: old node id: {:?} | new node id: {:?} | # mono through: {} | # indep mono in: {} | # indep mono out: {} | # stereo through: {} | # indep stereo in {} | # indep stereo out: {}, delay: {}",
+            "Replaced node in graph: old node id: {:?} | new node id: {:?} | # mono replacing: {} | # indep mono in: {} | # indep mono out: {} | # stereo replacing: {} | # indep stereo in {} | # indep stereo out: {}, delay: {}",
             old_debug_id,
-            DebugNodeID::User((node_ref, new_debug_name)),
-            new_mono_through_ports,
+            new_node_id,
+            new_mono_replacing_ports,
             new_indep_mono_in_ports,
             new_indep_mono_out_ports,
-            new_stereo_through_ports,
+            new_stereo_replacing_ports,
             new_indep_stereo_in_ports,
             new_indep_stereo_out_ports,
             new_delay,
@@ -263,17 +288,17 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let node_index: usize = node_ref.into();
         let node = self
             .resource_pool
-            .nodes
+            .user_nodes
             .get(node_index)
             .ok_or_else(|| audio_graph::Error::NodeDoesNotExist)?;
         let node = &node
             .as_ref()
             .ok_or_else(|| audio_graph::Error::NodeDoesNotExist)?;
 
-        let debug_id = node.1;
+        let debug_id = node.node.debug_id();
 
         self.graph.remove_node(node_ref)?;
-        self.resource_pool.remove_node(node_ref);
+        self.resource_pool.remove_user_node(node_ref);
 
         log::debug!("Removed node from graph: node id: {:?}", debug_id);
 
@@ -300,24 +325,26 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let src_node_index: usize = source_node_ref.into();
         let src_debug_id = self
             .resource_pool
-            .nodes
+            .user_nodes
             .get(src_node_index)
             .as_ref()
             .unwrap()
             .as_ref()
             .unwrap()
-            .1;
+            .node
+            .debug_id();
 
         let dest_node_index: usize = dest_node_ref.into();
         let dest_debug_id = self
             .resource_pool
-            .nodes
+            .user_nodes
             .get(dest_node_index)
             .as_ref()
             .unwrap()
             .as_ref()
             .unwrap()
-            .1;
+            .node
+            .debug_id();
 
         log::debug!(
             "Connect ports in graph: type: {:?} | source node id {:?}, source port index {} | -> | dest node id: {:?}, dest port index: {} |",
@@ -351,24 +378,26 @@ impl<'a, GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let src_node_index: usize = source_node_ref.into();
         let src_debug_id = self
             .resource_pool
-            .nodes
+            .user_nodes
             .get(src_node_index)
             .as_ref()
             .unwrap()
             .as_ref()
             .unwrap()
-            .1;
+            .node
+            .debug_id();
 
         let dest_node_index: usize = dest_node_ref.into();
         let dest_debug_id = self
             .resource_pool
-            .nodes
+            .user_nodes
             .get(dest_node_index)
             .as_ref()
             .unwrap()
             .as_ref()
             .unwrap()
-            .1;
+            .node
+            .debug_id();
 
         log::debug!(
             "Disconnected ports in graph: type: {:?} | source node id {:?}, source port index {} | -> | dest node id: {:?}, dest port index: {} |",

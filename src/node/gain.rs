@@ -41,39 +41,42 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for MonoGainNode<MAX_BLOCKSIZE>
 {
     fn debug_name(&self) -> &'static str {
-        "MonoGainNode"
+        "RustyDAWAudioGraph::MonoGain"
     }
 
-    fn mono_through_ports(&self) -> u32 {
+    fn mono_replacing_ports(&self) -> u32 {
         1
     }
 
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if let Some(mut buf) = buffers.mono_through.first_mut() {
-            let frames = proc_info.frames();
-            let gain_amp = self.gain_amp.smoothed(frames);
+        if buffers.mono_replacing.is_empty() {
+            return;
+        }
 
-            // TODO: SIMD
+        let buf = &mut *buffers.mono_replacing[0].atomic_borrow_mut();
+        let frames = proc_info.frames();
+        let gain_amp = self.gain_amp.smoothed(frames);
 
-            if gain_amp.is_smoothing() {
-                for i in 0..frames {
-                    buf.buf[i] *= gain_amp[i];
-                }
-            } else {
-                // We can optimize by using a constant gain (better SIMD load efficiency).
-                let gain = gain_amp[0];
+        // TODO: SIMD
 
-                if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
-                    for i in 0..frames {
-                        buf.buf[i] *= gain;
-                    }
-                } // else nothing to do
+        if gain_amp.is_smoothing() {
+            for i in 0..frames {
+                buf.buf[i] *= gain_amp[i];
             }
+        } else {
+            // We can optimize by using a constant gain (better SIMD load efficiency).
+            let gain = gain_amp[0];
+
+            if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
+                for i in 0..frames {
+                    buf.buf[i] *= gain;
+                }
+            } // else nothing to do
         }
     }
 }
@@ -112,41 +115,44 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for StereoGainNode<MAX_BLOCKSIZE>
 {
     fn debug_name(&self) -> &'static str {
-        "MonoGainNode"
+        "RustyDAWAudioGraph::StereoGain"
     }
 
-    fn stereo_through_ports(&self) -> u32 {
+    fn stereo_replacing_ports(&self) -> u32 {
         1
     }
 
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if let Some(mut buf) = buffers.stereo_through.first_mut() {
-            let frames = proc_info.frames();
-            let gain_amp = self.gain_amp.smoothed(frames);
+        if buffers.stereo_replacing.is_empty() {
+            return;
+        }
 
-            // TODO: SIMD
+        let buf = &mut *buffers.stereo_replacing[0].atomic_borrow_mut();
+        let frames = proc_info.frames();
+        let gain_amp = self.gain_amp.smoothed(frames);
 
-            if gain_amp.is_smoothing() {
-                for i in 0..frames {
-                    buf.left[i] *= gain_amp[i];
-                    buf.right[i] *= gain_amp[i];
-                }
-            } else {
-                // We can optimize by using a constant gain (better SIMD load efficiency).
-                let gain = gain_amp[0];
+        // TODO: SIMD
 
-                if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
-                    for i in 0..frames {
-                        buf.left[i] *= gain;
-                        buf.right[i] *= gain;
-                    }
-                } // else nothing to do
+        if gain_amp.is_smoothing() {
+            for i in 0..frames {
+                buf.left[i] *= gain_amp[i];
+                buf.right[i] *= gain_amp[i];
             }
+        } else {
+            // We can optimize by using a constant gain (better SIMD load efficiency).
+            let gain = gain_amp[0];
+
+            if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
+                for i in 0..frames {
+                    buf.left[i] *= gain;
+                    buf.right[i] *= gain;
+                }
+            } // else nothing to do
         }
     }
 }

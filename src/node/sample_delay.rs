@@ -18,7 +18,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for MonoSampleDelayNode
 {
     fn debug_name(&self) -> &'static str {
-        "MonoSampleDelayNode"
+        "RustyDAWAudioGraph::MonoSampleDelay"
     }
 
     // Sample delay requires copying to an intermediate buffer anyway, so there is
@@ -38,18 +38,18 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        mut buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
         if buffers.indep_mono_in.is_empty() || buffers.indep_mono_out.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
+            // As per the spec, all unused independent audio output buffers must be cleared to 0.0.
+            buffers.clear_all_indep_out_buffers(proc_info);
             return;
         }
 
         // Won't panic because we checked these were not empty earlier.
-        let src = buffers.indep_mono_in.first().unwrap();
-        let mut dst = buffers.indep_mono_out.first_mut().unwrap();
+        let src = &*buffers.indep_mono_in[0].atomic_borrow();
+        let dst = &mut *buffers.indep_mono_out[0].atomic_borrow_mut();
 
         let frames = proc_info.frames();
 
@@ -138,7 +138,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for StereoSampleDelayNode
 {
     fn debug_name(&self) -> &'static str {
-        "StereoSampleDelayNode"
+        "RustyDAWAudioGraph::StereoSampleDelay"
     }
 
     // Sample delay requires copying to an intermediate buffer anyway, so there is
@@ -158,26 +158,26 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        mut buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
         // TODO: Check that the compiler elids all bounds checking properly. If not, then raw unsafe memcpys could
         // possibly be used if more performance is needed.
+
+        if buffers.indep_stereo_in.is_empty() || buffers.indep_stereo_out.is_empty() {
+            // As per the spec, all unused independent audio output buffers must be cleared to 0.0.
+            buffers.clear_all_indep_out_buffers(proc_info);
+            return;
+        }
 
         // This is always true. It is here to hint to the compiler to elid bounds checking.
         if self.buf_left.len() != self.buf_right.len() {
             return;
         }
 
-        if buffers.indep_stereo_in.is_empty() || buffers.indep_stereo_out.is_empty() {
-            // As per the spec, all unused audio output buffers must be cleared to 0.0.
-            buffers.clear_audio_out_buffers(proc_info);
-            return;
-        }
-
         // Won't panic because we checked these were not empty earlier.
-        let src = buffers.indep_stereo_in.first().unwrap();
-        let mut dst = buffers.indep_stereo_out.first_mut().unwrap();
+        let src = &*buffers.indep_stereo_in[0].atomic_borrow();
+        let dst = &mut *buffers.indep_stereo_out[0].atomic_borrow_mut();
 
         let frames = proc_info.frames();
 

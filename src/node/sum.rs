@@ -14,12 +14,12 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for MonoSumNode
 {
     fn debug_name(&self) -> &'static str {
-        "MonoSumNode"
+        "RustyDAWAudioGraph::MonoSum"
     }
 
-    // The first port is a "through" port for efficiency. All the rest
+    // The first port is a "replacing" port for efficiency. All the rest
     // are "independent" ports.
-    fn mono_through_ports(&self) -> u32 {
+    fn mono_replacing_ports(&self) -> u32 {
         if self.num_inputs == 0 {
             0
         } else {
@@ -37,16 +37,16 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.mono_through.is_empty() {
+        if buffers.mono_replacing.is_empty() {
             return;
         }
 
         let frames = proc_info.frames();
         // Won't panic because we checked this was not empty earlier.
-        let mut through = buffers.mono_through.first_mut().unwrap();
+        let replacing = &mut *buffers.mono_replacing[0].atomic_borrow_mut();
         let audio_in = &buffers.indep_mono_in;
 
         // TODO: SIMD
@@ -54,83 +54,83 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         match audio_in.len() {
             0 => return,
             1 => {
-                let src_1 = audio_in.buffer(0).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] += src_1[i];
+                    replacing[i] += src_1[i];
                 }
             }
             2 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] += src_1[i] + src_2[i];
+                    replacing[i] += src_1[i] + src_2[i];
                 }
             }
             3 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] += src_1[i] + src_2[i] + src_3[i];
+                    replacing[i] += src_1[i] + src_2[i] + src_3[i];
                 }
             }
             4 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i];
+                    replacing[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i];
                 }
             }
             5 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
+                let src_5 = &*audio_in[4].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i];
+                    replacing[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i];
                 }
             }
             6 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
-                let src_6 = audio_in.buffer(5).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
+                let src_5 = &*audio_in[4].atomic_borrow();
+                let src_6 = &*audio_in[5].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i] + src_6[i];
+                    replacing[i] += src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i] + src_6[i];
                 }
             }
             7 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
-                let src_6 = audio_in.buffer(5).unwrap();
-                let src_7 = audio_in.buffer(6).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
+                let src_5 = &*audio_in[4].atomic_borrow();
+                let src_6 = &*audio_in[5].atomic_borrow();
+                let src_7 = &*audio_in[6].atomic_borrow();
 
                 for i in 0..frames {
-                    through[i] +=
+                    replacing[i] +=
                         src_1[i] + src_2[i] + src_3[i] + src_4[i] + src_5[i] + src_6[i] + src_7[i];
                 }
             }
             // TODO: Additional optimized loops?
             num_inputs => {
                 for ch_i in 1..num_inputs {
-                    let src = audio_in.buffer(ch_i).unwrap();
+                    let src = &*audio_in[ch_i].atomic_borrow();
 
                     for i in 0..frames {
-                        through[i] += src[i];
+                        replacing[i] += src[i];
                     }
                 }
             }
@@ -152,12 +152,12 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for StereoSumNode
 {
     fn debug_name(&self) -> &'static str {
-        "StereoSumNode"
+        "RustyDAWAudioGraph::StereoSum"
     }
 
-    // The first port is a "through" port for efficiency. All the rest
+    // The first port is a "replacing" port for efficiency. All the rest
     // are "independent" ports.
-    fn stereo_through_ports(&self) -> u32 {
+    fn stereo_replacing_ports(&self) -> u32 {
         if self.num_stereo_inputs == 0 {
             0
         } else {
@@ -175,16 +175,16 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if buffers.stereo_through.is_empty() {
+        if buffers.stereo_replacing.is_empty() {
             return;
         }
 
         let frames = proc_info.frames();
         // Won't panic because we checked this was not empty earlier.
-        let mut through = buffers.stereo_through.first_mut().unwrap();
+        let mut replacing = buffers.stereo_replacing[0].atomic_borrow_mut();
         let audio_in = &buffers.indep_stereo_in;
 
         // TODO: SIMD
@@ -192,59 +192,59 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         match audio_in.len() {
             0 => return,
             1 => {
-                let src_1 = audio_in.buffer(0).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] += src_1.left[i];
-                    through.right[i] += src_1.right[i];
+                    replacing.left[i] += src_1.left[i];
+                    replacing.right[i] += src_1.right[i];
                 }
             }
             2 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] += src_1.left[i] + src_2.left[i];
-                    through.right[i] += src_1.right[i] + src_2.right[i];
+                    replacing.left[i] += src_1.left[i] + src_2.left[i];
+                    replacing.right[i] += src_1.right[i] + src_2.right[i];
                 }
             }
             3 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] += src_1.left[i] + src_2.left[i] + src_3.left[i];
-                    through.right[i] += src_1.right[i] + src_2.right[i] + src_3.right[i];
+                    replacing.left[i] += src_1.left[i] + src_2.left[i] + src_3.left[i];
+                    replacing.right[i] += src_1.right[i] + src_2.right[i] + src_3.right[i];
                 }
             }
             4 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] +=
+                    replacing.left[i] +=
                         src_1.left[i] + src_2.left[i] + src_3.left[i] + src_4.left[i];
-                    through.right[i] +=
+                    replacing.right[i] +=
                         src_1.right[i] + src_2.right[i] + src_3.right[i] + src_4.right[i];
                 }
             }
             5 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
+                let src_5 = &*audio_in[4].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] += src_1.left[i]
+                    replacing.left[i] += src_1.left[i]
                         + src_2.left[i]
                         + src_3.left[i]
                         + src_4.left[i]
                         + src_5.left[i];
-                    through.right[i] += src_1.right[i]
+                    replacing.right[i] += src_1.right[i]
                         + src_2.right[i]
                         + src_3.right[i]
                         + src_4.right[i]
@@ -252,21 +252,21 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 }
             }
             6 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
-                let src_6 = audio_in.buffer(5).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
+                let src_5 = &*audio_in[4].atomic_borrow();
+                let src_6 = &*audio_in[5].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] += src_1.left[i]
+                    replacing.left[i] += src_1.left[i]
                         + src_2.left[i]
                         + src_3.left[i]
                         + src_4.left[i]
                         + src_5.left[i]
                         + src_6.left[i];
-                    through.right[i] += src_1.right[i]
+                    replacing.right[i] += src_1.right[i]
                         + src_2.right[i]
                         + src_3.right[i]
                         + src_4.right[i]
@@ -275,23 +275,23 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 }
             }
             7 => {
-                let src_1 = audio_in.buffer(0).unwrap();
-                let src_2 = audio_in.buffer(1).unwrap();
-                let src_3 = audio_in.buffer(2).unwrap();
-                let src_4 = audio_in.buffer(3).unwrap();
-                let src_5 = audio_in.buffer(4).unwrap();
-                let src_6 = audio_in.buffer(5).unwrap();
-                let src_7 = audio_in.buffer(6).unwrap();
+                let src_1 = &*audio_in[0].atomic_borrow();
+                let src_2 = &*audio_in[1].atomic_borrow();
+                let src_3 = &*audio_in[2].atomic_borrow();
+                let src_4 = &*audio_in[3].atomic_borrow();
+                let src_5 = &*audio_in[4].atomic_borrow();
+                let src_6 = &*audio_in[5].atomic_borrow();
+                let src_7 = &*audio_in[6].atomic_borrow();
 
                 for i in 0..frames {
-                    through.left[i] += src_1.left[i]
+                    replacing.left[i] += src_1.left[i]
                         + src_2.left[i]
                         + src_3.left[i]
                         + src_4.left[i]
                         + src_5.left[i]
                         + src_6.left[i]
                         + src_7.left[i];
-                    through.right[i] += src_1.right[i]
+                    replacing.right[i] += src_1.right[i]
                         + src_2.right[i]
                         + src_3.right[i]
                         + src_4.right[i]
@@ -303,11 +303,11 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             // TODO: Additional optimized loops?
             num_stereo_inputs => {
                 for ch_i in 1..num_stereo_inputs {
-                    let src = audio_in.buffer(ch_i).unwrap();
+                    let src = &*audio_in[ch_i].atomic_borrow();
 
                     for i in 0..frames {
-                        through.left[i] += src.left[i];
-                        through.right[i] += src.right[i];
+                        replacing.left[i] += src.left[i];
+                        replacing.right[i] += src.right[i];
                     }
                 }
             }

@@ -51,25 +51,24 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for MonoMonitorNode
 {
     fn debug_name(&self) -> &'static str {
-        "MonoMonitorNode"
+        "RustyDAWAudioGraph::MonoMonitor"
     }
 
-    fn mono_through_ports(&self) -> u32 {
+    fn mono_replacing_ports(&self) -> u32 {
         1
     }
 
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if let Some(buf) = buffers.mono_through.first() {
+        if self.active.load(Ordering::Relaxed) && !buffers.mono_replacing.is_empty() {
+            let buf = buffers.mono_replacing[0].atomic_borrow();
             let frames = proc_info.frames();
 
-            if self.active.load(Ordering::Relaxed) {
-                self.tx.push_slice(&buf.buf[0..frames]);
-            }
+            self.tx.push_slice(&buf.buf[0..frames]);
         }
     }
 }
@@ -127,26 +126,25 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     AudioGraphNode<GlobalData, MAX_BLOCKSIZE> for StereoMonitorNode
 {
     fn debug_name(&self) -> &'static str {
-        "StereoMonitorNode"
+        "RustyDAWAudioGraph::StereoMonitor"
     }
 
-    fn stereo_through_ports(&self) -> u32 {
+    fn stereo_replacing_ports(&self) -> u32 {
         1
     }
 
     fn process(
         &mut self,
         proc_info: &ProcInfo<MAX_BLOCKSIZE>,
-        buffers: &mut ProcBuffers<f32, MAX_BLOCKSIZE>,
+        buffers: ProcBuffers<f32, MAX_BLOCKSIZE>,
         _global_data: &GlobalData,
     ) {
-        if let Some(buf) = buffers.stereo_through.first() {
+        if self.active.load(Ordering::Relaxed) && !buffers.stereo_replacing.is_empty() {
+            let buf = buffers.stereo_replacing[0].atomic_borrow();
             let frames = proc_info.frames();
 
-            if self.active.load(Ordering::Relaxed) {
-                self.left_tx.push_slice(&buf.left[0..frames]);
-                self.right_tx.push_slice(&buf.right[0..frames]);
-            }
+            self.left_tx.push_slice(&buf.left[0..frames]);
+            self.right_tx.push_slice(&buf.right[0..frames]);
         }
     }
 }

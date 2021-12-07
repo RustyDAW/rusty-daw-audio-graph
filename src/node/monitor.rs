@@ -4,12 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{AudioGraphNode, ProcBuffers, ProcInfo};
 
-pub struct MonoMonitorNodeHandle {
+pub struct MonoMonitorNodeUiHandle {
     pub monitor_rx: Consumer<f32>,
     active: Shared<AtomicBool>,
 }
 
-impl MonoMonitorNodeHandle {
+impl MonoMonitorNodeUiHandle {
     pub fn active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
     }
@@ -29,7 +29,7 @@ impl MonoMonitorNode {
         max_frames: usize,
         active: bool,
         coll_handle: &Handle,
-    ) -> (Self, MonoMonitorNodeHandle) {
+    ) -> (Self, MonoMonitorNodeUiHandle) {
         let (tx, rx) = RingBuffer::<f32>::new(max_frames).split();
 
         let active = Shared::new(coll_handle, AtomicBool::new(active));
@@ -39,7 +39,7 @@ impl MonoMonitorNode {
                 active: Shared::clone(&active),
                 tx,
             },
-            MonoMonitorNodeHandle {
+            MonoMonitorNodeUiHandle {
                 monitor_rx: rx,
                 active,
             },
@@ -73,13 +73,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     }
 }
 
-pub struct StereoMonitorNodeHandle {
+pub struct StereoMonitorNodeUiHandle {
     pub monitor_left_rx: Consumer<f32>,
     pub monitor_right_rx: Consumer<f32>,
     active: Shared<AtomicBool>,
 }
 
-impl StereoMonitorNodeHandle {
+impl StereoMonitorNodeUiHandle {
     pub fn active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
     }
@@ -101,7 +101,7 @@ impl StereoMonitorNode {
         max_frames: usize,
         active: bool,
         coll_handle: &Handle,
-    ) -> (Self, StereoMonitorNodeHandle) {
+    ) -> (Self, StereoMonitorNodeUiHandle) {
         let (left_tx, left_rx) = RingBuffer::<f32>::new(max_frames).split();
         let (right_tx, right_rx) = RingBuffer::<f32>::new(max_frames).split();
 
@@ -113,7 +113,7 @@ impl StereoMonitorNode {
                 left_tx,
                 right_tx,
             },
-            StereoMonitorNodeHandle {
+            StereoMonitorNodeUiHandle {
                 active,
                 monitor_left_rx: left_rx,
                 monitor_right_rx: right_rx,

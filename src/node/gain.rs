@@ -1,10 +1,10 @@
-use rusty_daw_core::{ParamF32, ParamF32Handle, SampleRate, Unit};
+use rusty_daw_core::{ParamF32, ParamF32UiHandle, SampleRate, Unit};
 
 use super::{DB_GRADIENT, SMOOTH_SECS};
 use crate::{AudioGraphNode, ProcBuffers, ProcInfo};
 
-pub struct GainNodeHandle {
-    pub gain_db: ParamF32Handle,
+pub struct GainNodeUiHandle {
+    pub gain_db: ParamF32UiHandle,
 }
 
 pub struct MonoGainNode<const MAX_BLOCKSIZE: usize> {
@@ -17,7 +17,7 @@ impl<const MAX_BLOCKSIZE: usize> MonoGainNode<MAX_BLOCKSIZE> {
         min_db: f32,
         max_db: f32,
         sample_rate: SampleRate,
-    ) -> (Self, GainNodeHandle) {
+    ) -> (Self, GainNodeUiHandle) {
         let (gain_amp, gain_handle) = ParamF32::from_value(
             gain_db,
             min_db,
@@ -30,7 +30,7 @@ impl<const MAX_BLOCKSIZE: usize> MonoGainNode<MAX_BLOCKSIZE> {
 
         (
             Self { gain_amp },
-            GainNodeHandle {
+            GainNodeUiHandle {
                 gain_db: gain_handle,
             },
         )
@@ -91,7 +91,7 @@ impl<const MAX_BLOCKSIZE: usize> StereoGainNode<MAX_BLOCKSIZE> {
         min_db: f32,
         max_db: f32,
         sample_rate: SampleRate,
-    ) -> (Self, GainNodeHandle) {
+    ) -> (Self, GainNodeUiHandle) {
         let (gain_amp, gain_handle) = ParamF32::from_value(
             gain_db,
             min_db,
@@ -104,7 +104,7 @@ impl<const MAX_BLOCKSIZE: usize> StereoGainNode<MAX_BLOCKSIZE> {
 
         (
             Self { gain_amp },
-            GainNodeHandle {
+            GainNodeUiHandle {
                 gain_db: gain_handle,
             },
         )

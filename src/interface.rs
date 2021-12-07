@@ -2,7 +2,7 @@ use basedrop::{Collector, Handle, Shared, SharedCell};
 use rusty_daw_core::SampleRate;
 
 use super::graph_state::GraphState;
-use super::node::gain::{GainNodeHandle, StereoGainNode};
+use super::node::gain::{GainNodeUiHandle, StereoGainNode};
 use super::resource_pool::GraphResourcePool;
 use super::verifier::Verifier;
 use super::{AudioGraphExecutor, AudioGraphNode, NodeRef, NodeState, PortType};
@@ -19,7 +19,7 @@ pub struct GraphInterface<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE
     pub(crate) coll_handle: Handle,
 
     pub(crate) root_node_ref: NodeRef,
-    pub(crate) _root_node_handle: GainNodeHandle,
+    pub(crate) _root_node_handle: GainNodeUiHandle,
 
     pub(crate) next_delay_comp_node_id: u64,
     pub(crate) next_sum_node_id: u64,

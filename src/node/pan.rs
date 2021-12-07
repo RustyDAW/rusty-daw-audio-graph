@@ -1,4 +1,4 @@
-use rusty_daw_core::{Gradient, ParamF32, ParamF32Handle, SampleRate, Unit};
+use rusty_daw_core::{Gradient, ParamF32, ParamF32UiHandle, SampleRate, Unit};
 
 use super::{DB_GRADIENT, SMOOTH_SECS};
 use crate::{AudioGraphNode, ProcBuffers, ProcInfo};
@@ -9,14 +9,14 @@ pub enum PanLaw {
     Linear,
 }
 
-pub struct StereoGainPanHandle {
-    pub gain_db: ParamF32Handle,
-    pub pan: ParamF32Handle,
+pub struct StereoGainPainUiHandle {
+    pub gain_db: ParamF32UiHandle,
+    pub pan: ParamF32UiHandle,
 
     pan_law: PanLaw,
 }
 
-impl StereoGainPanHandle {
+impl StereoGainPainUiHandle {
     pub fn pan_law(&self) -> &PanLaw {
         &self.pan_law
     }
@@ -36,7 +36,7 @@ impl<const MAX_BLOCKSIZE: usize> StereoGainPanNode<MAX_BLOCKSIZE> {
         pan: f32,
         pan_law: PanLaw,
         sample_rate: SampleRate,
-    ) -> (Self, StereoGainPanHandle) {
+    ) -> (Self, StereoGainPainUiHandle) {
         let (gain_amp, gain_handle) = ParamF32::from_value(
             gain_db,
             min_db,
@@ -63,7 +63,7 @@ impl<const MAX_BLOCKSIZE: usize> StereoGainPanNode<MAX_BLOCKSIZE> {
                 pan,
                 pan_law,
             },
-            StereoGainPanHandle {
+            StereoGainPainUiHandle {
                 gain_db: gain_handle,
                 pan: pan_handle,
                 pan_law,

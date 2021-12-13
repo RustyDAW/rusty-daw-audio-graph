@@ -81,7 +81,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     }
 
     #[cfg(feature = "cpal-backend")]
-    pub fn process<T: cpal::Sample, G: FnMut(AtomicRefMut<GlobalData>, usize)>(
+    pub fn process<T: cpal::Sample, G: FnMut(AtomicRefMut<GlobalData>, Frames)>(
         &self,
         mut out: &mut [T],
         mut global_data_process: G,

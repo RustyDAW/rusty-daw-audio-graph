@@ -157,15 +157,13 @@ impl<'a, T: Default + Copy + Clone + Send + 'static, const MAX_BLOCKSIZE: usize>
     ///
     /// You may use this method for convenience.
     pub fn clear_all_indep_out_buffers(&mut self, proc_info: &ProcInfo<MAX_BLOCKSIZE>) {
-        let frames = proc_info.frames();
-
         for b in self.indep_mono_out.iter_mut() {
             let mut b = b.atomic_borrow_mut();
-            b.clear_frames(frames);
+            b.clear_frames(proc_info.frames);
         }
         for b in self.indep_stereo_out.iter_mut() {
             let mut b = b.atomic_borrow_mut();
-            b.clear_frames(frames);
+            b.clear_frames(proc_info.frames);
         }
     }
 }

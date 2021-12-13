@@ -1,5 +1,5 @@
 use atomic_refcell::AtomicRef;
-use rusty_daw_core::SampleRate;
+use rusty_daw_core::{Frames, SampleRate, SuperFrames};
 
 use crate::shared::SharedStereoBuffer;
 use crate::task::{AudioGraphTask, MimicProcessReplacingTask};
@@ -27,7 +27,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     }
 
     /// Only to be used by the rt thread.
-    pub fn process(&mut self, frames: usize, global_data: AtomicRef<GlobalData>) {
+    pub fn process(&mut self, frames: Frames, global_data: AtomicRef<GlobalData>) {
         // TODO: Use multithreading for processing tasks.
 
         let global_data = &*global_data;
@@ -92,7 +92,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         // (at the cost of worse performance) using features.
         let src = &*self.root_out.borrow();
 
-        let frames = self.proc_info.frames.min(out.len() / 2);
+        let frames = self.proc_info.frames.0.min(out.len() / 2);
 
         out = &mut out[0..frames * 2];
 
@@ -117,7 +117,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         // (at the cost of worse performance) using features.
         let src = &*self.root_out.borrow();
 
-        let frames = self.proc_info.frames.min(out.len() / 2);
+        let frames = self.proc_info.frames.0.min(out.len() / 2);
 
         out = &mut out[0..frames * 2];
 
@@ -138,7 +138,16 @@ pub struct ProcInfo<const MAX_BLOCKSIZE: usize> {
     /// for the whole lifetime of this node, so this is just provided for convenience.
     pub sample_rate_recip: f64,
 
-    frames: usize,
+    /// The number of frames in this process block. This will never be larger than `MAX_BLOCKSIZE`.
+    pub frames: Frames,
+
+    /// The number of super-frames in this process block. A single super-frame is exactly
+    /// `1 / 28,224,000 seconds`. This number happens to be nicely divisible by all common sample
+    /// rates, allowing changes to sample rate in a project to be a lossless process.
+    ///
+    /// Note that super-frames can be calculated by calling `proc_info.frames.to_super_frames(proc_info.sample_rate)`.
+    /// This is just provided for convenience.
+    pub super_frames: SuperFrames,
 }
 
 impl<const MAX_BLOCKSIZE: usize> ProcInfo<MAX_BLOCKSIZE> {
@@ -146,29 +155,14 @@ impl<const MAX_BLOCKSIZE: usize> ProcInfo<MAX_BLOCKSIZE> {
         Self {
             sample_rate,
             sample_rate_recip: sample_rate.recip(),
-            frames: 0,
+            frames: Frames(0),
+            super_frames: SuperFrames(0),
         }
     }
 
     #[inline]
-    fn set_frames(&mut self, frames: usize) {
-        self.frames = frames.min(MAX_BLOCKSIZE);
-    }
-
-    /// The number of audio frames in this current process block.
-    ///
-    /// This will always be less than or equal to `MAX_BLOCKSIZE`.
-    ///
-    /// Note, for optimization purposes, this internally looks like
-    /// `self.frames.min(MAX_BLOCKSIZE)`. This allows the compiler to
-    /// safely optimize loops over buffers with length `MAX_BLOCKSIZE`
-    /// by eliding all bounds checking and allowing for more aggressive
-    /// auto-vectorization optimizations. If you need to use this multiple
-    /// times within the same function, please only call this once and store
-    /// it in a local variable to avoid running this internal check every
-    /// subsequent time.
-    #[inline]
-    pub fn frames(&self) -> usize {
-        self.frames.min(MAX_BLOCKSIZE)
+    fn set_frames(&mut self, frames: Frames) {
+        self.frames = Frames(frames.0.min(MAX_BLOCKSIZE));
+        self.super_frames = self.frames.to_super_frames(self.sample_rate);
     }
 }

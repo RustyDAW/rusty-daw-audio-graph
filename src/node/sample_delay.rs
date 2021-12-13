@@ -51,12 +51,12 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let src = &*buffers.indep_mono_in[0].atomic_borrow();
         let dst = &mut *buffers.indep_mono_out[0].atomic_borrow_mut();
 
-        let frames = proc_info.frames();
+        let frames = proc_info.frames.compiler_hint_min(MAX_BLOCKSIZE);
 
         // TODO: Check that the compiler elids all bounds checking properly. If not, then raw unsafe memcpys could
         // possibly be used if more performance is needed.
 
-        if frames > self.buf.len() {
+        if frames.0 > self.buf.len() {
             if self.read_pointer == 0 {
                 // Only one copy is needed.
 
@@ -74,43 +74,43 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             }
 
             // Copy the remaining frames from the input buffer to the output buffer.
-            let remaining = frames - self.buf.len();
-            dst.buf[self.buf.len()..frames].copy_from_slice(&src.buf[0..remaining]);
+            let remaining = frames.0 - self.buf.len();
+            dst.buf[self.buf.len()..frames.0].copy_from_slice(&src.buf[0..remaining]);
 
             // Copy the final remaining frames from the input buffer into self.buf.
             // self.buf is "empty" at this point, so reset the read pointer so only one copy operation is needed.
             self.read_pointer = 0;
             let buf_len = self.buf.len();
-            self.buf[0..buf_len].copy_from_slice(&src[remaining..frames]);
+            self.buf[0..buf_len].copy_from_slice(&src[remaining..frames.0]);
         } else {
-            if self.read_pointer + frames < self.buf.len() {
+            if self.read_pointer + frames.0 < self.buf.len() {
                 // Only one copy is needed.
 
                 // Copy frames from self.buf into the output buffer.
-                dst[0..frames]
-                    .copy_from_slice(&self.buf[self.read_pointer..self.read_pointer + frames]);
+                dst[0..frames.0]
+                    .copy_from_slice(&self.buf[self.read_pointer..self.read_pointer + frames.0]);
 
                 // Copy all frames from the input buffer into self.buf.
-                self.buf[self.read_pointer..self.read_pointer + frames]
-                    .copy_from_slice(&src.buf[0..frames]);
+                self.buf[self.read_pointer..self.read_pointer + frames.0]
+                    .copy_from_slice(&src.buf[0..frames.0]);
             } else {
                 // Two copies are needed.
 
                 let first_len = self.buf.len() - self.read_pointer;
-                let second_len = frames - first_len;
+                let second_len = frames.0 - first_len;
 
                 // Copy frames from self.buf into the output buffer.
                 dst[0..first_len].copy_from_slice(&self.buf[self.read_pointer..self.buf.len()]);
-                dst[first_len..frames].copy_from_slice(&self.buf[0..second_len]);
+                dst[first_len..frames.0].copy_from_slice(&self.buf[0..second_len]);
 
                 // Copy all frames from the input buffer into self.buf.
                 let buf_len = self.buf.len();
                 self.buf[self.read_pointer..buf_len].copy_from_slice(&src.buf[0..first_len]);
-                self.buf[0..second_len].copy_from_slice(&src.buf[first_len..frames]);
+                self.buf[0..second_len].copy_from_slice(&src.buf[first_len..frames.0]);
             }
 
             // Get the next position of the read pointer.
-            self.read_pointer += frames;
+            self.read_pointer += frames.0;
             if self.read_pointer >= self.buf.len() {
                 self.read_pointer -= self.buf.len();
             }
@@ -179,9 +179,9 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         let src = &*buffers.indep_stereo_in[0].atomic_borrow();
         let dst = &mut *buffers.indep_stereo_out[0].atomic_borrow_mut();
 
-        let frames = proc_info.frames();
+        let frames = proc_info.frames.compiler_hint_min(MAX_BLOCKSIZE);
 
-        if frames > self.buf_left.len() {
+        if frames.0 > self.buf_left.len() {
             if self.read_pointer == 0 {
                 // Only one copy is needed.
 
@@ -209,59 +209,60 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             }
 
             // Copy the remaining frames from the input buffer to the output buffer.
-            let remaining = frames - self.buf_left.len();
-            dst.left[self.buf_left.len()..frames].copy_from_slice(&src.left[0..remaining]);
-            dst.right[self.buf_left.len()..frames].copy_from_slice(&src.right[0..remaining]);
+            let remaining = frames.0 - self.buf_left.len();
+            dst.left[self.buf_left.len()..frames.0].copy_from_slice(&src.left[0..remaining]);
+            dst.right[self.buf_left.len()..frames.0].copy_from_slice(&src.right[0..remaining]);
 
             // Copy the final remaining frames from the input buffer into self.buf.
             // self.buf is "empty" at this point, so reset the read pointer so only one copy operation is needed.
             self.read_pointer = 0;
             let buf_len = self.buf_left.len();
-            self.buf_left[0..buf_len].copy_from_slice(&src.left[remaining..frames]);
-            self.buf_right[0..buf_len].copy_from_slice(&src.right[remaining..frames]);
+            self.buf_left[0..buf_len].copy_from_slice(&src.left[remaining..frames.0]);
+            self.buf_right[0..buf_len].copy_from_slice(&src.right[remaining..frames.0]);
         } else {
-            if self.read_pointer + frames < self.buf_left.len() {
+            if self.read_pointer + frames.0 < self.buf_left.len() {
                 // Only one copy is needed.
 
                 // Copy frames from self.buf into the output buffer.
-                dst.left[0..frames]
-                    .copy_from_slice(&self.buf_left[self.read_pointer..self.read_pointer + frames]);
-                dst.right[0..frames].copy_from_slice(
-                    &self.buf_right[self.read_pointer..self.read_pointer + frames],
+                dst.left[0..frames.0].copy_from_slice(
+                    &self.buf_left[self.read_pointer..self.read_pointer + frames.0],
+                );
+                dst.right[0..frames.0].copy_from_slice(
+                    &self.buf_right[self.read_pointer..self.read_pointer + frames.0],
                 );
 
                 // Copy all frames from the input buffer into self.buf.
-                self.buf_left[self.read_pointer..self.read_pointer + frames]
-                    .copy_from_slice(&src.left[0..frames]);
-                self.buf_right[self.read_pointer..self.read_pointer + frames]
-                    .copy_from_slice(&src.right[0..frames]);
+                self.buf_left[self.read_pointer..self.read_pointer + frames.0]
+                    .copy_from_slice(&src.left[0..frames.0]);
+                self.buf_right[self.read_pointer..self.read_pointer + frames.0]
+                    .copy_from_slice(&src.right[0..frames.0]);
             } else {
                 // Two copies are needed.
 
                 let first_len = self.buf_left.len() - self.read_pointer;
-                let second_len = frames - first_len;
+                let second_len = frames.0 - first_len;
 
                 // Copy frames from self.buf into the output buffer.
                 dst.left[0..first_len]
                     .copy_from_slice(&self.buf_left[self.read_pointer..self.buf_left.len()]);
-                dst.left[first_len..frames].copy_from_slice(&self.buf_left[0..second_len]);
+                dst.left[first_len..frames.0].copy_from_slice(&self.buf_left[0..second_len]);
 
                 dst.right[0..first_len]
                     .copy_from_slice(&self.buf_right[self.read_pointer..self.buf_left.len()]);
-                dst.right[first_len..frames].copy_from_slice(&self.buf_right[0..second_len]);
+                dst.right[first_len..frames.0].copy_from_slice(&self.buf_right[0..second_len]);
 
                 // Copy all frames from the input buffer into self.buf.
                 let buf_len = self.buf_left.len();
                 self.buf_left[self.read_pointer..buf_len].copy_from_slice(&src.left[0..first_len]);
-                self.buf_left[0..second_len].copy_from_slice(&src.left[first_len..frames]);
+                self.buf_left[0..second_len].copy_from_slice(&src.left[first_len..frames.0]);
 
                 self.buf_right[self.read_pointer..buf_len]
                     .copy_from_slice(&src.right[0..first_len]);
-                self.buf_right[0..second_len].copy_from_slice(&src.right[first_len..frames]);
+                self.buf_right[0..second_len].copy_from_slice(&src.right[first_len..frames.0]);
             }
 
             // Get the next position of the read pointer.
-            self.read_pointer += frames;
+            self.read_pointer += frames.0;
             if self.read_pointer >= self.buf_left.len() {
                 self.read_pointer -= self.buf_left.len();
             }

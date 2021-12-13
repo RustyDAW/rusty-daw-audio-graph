@@ -1,6 +1,6 @@
 use atomic_refcell::{AtomicRefCell, AtomicRefMut};
 use basedrop::{Handle, Shared, SharedCell};
-use rusty_daw_core::SampleRate;
+use rusty_daw_core::{Frames, SampleRate};
 
 use crate::resource_pool::GraphResourcePool;
 use crate::schedule::Schedule;
@@ -45,7 +45,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     }
 
     #[cfg(not(feature = "cpal-backend"))]
-    pub fn process<G: FnMut(AtomicRefMut<GlobalData>, usize)>(
+    pub fn process<G: FnMut(AtomicRefMut<GlobalData>, Frames)>(
         &self,
         mut out: &mut [f32],
         mut global_data_process: G,
@@ -59,7 +59,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
 
         // Process in blocks.
         while frames_left > 0 {
-            let frames = frames_left.min(MAX_BLOCKSIZE);
+            let frames = Frames(frames_left.min(MAX_BLOCKSIZE));
 
             // Process the user's global data. This should not panic because this is the only place
             // this is ever borrowed.
@@ -73,10 +73,10 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 schedule.process(frames, global_data);
             }
 
-            schedule.from_root_output_interleaved(&mut out[0..(frames * 2)]);
+            schedule.from_root_output_interleaved(&mut out[0..(frames.0 * 2)]);
 
-            out = &mut out[(frames * 2)..];
-            frames_left -= frames;
+            out = &mut out[(frames.0 * 2)..];
+            frames_left -= frames.0;
         }
     }
 

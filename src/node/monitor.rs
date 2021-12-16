@@ -67,7 +67,8 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         if self.active.load(Ordering::Relaxed) && !buffers.mono_replacing.is_empty() {
             let buf = buffers.mono_replacing[0].atomic_borrow();
 
-            self.tx.push_slice(&buf.buf[0..proc_info.frames.0]);
+            self.tx
+                .push_slice(&buf.buf[0..proc_info.frames.unchecked_frames()]);
         }
     }
 }
@@ -141,8 +142,10 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         if self.active.load(Ordering::Relaxed) && !buffers.stereo_replacing.is_empty() {
             let buf = buffers.stereo_replacing[0].atomic_borrow();
 
-            self.left_tx.push_slice(&buf.left[0..proc_info.frames.0]);
-            self.right_tx.push_slice(&buf.right[0..proc_info.frames.0]);
+            self.left_tx
+                .push_slice(&buf.left[0..proc_info.frames.unchecked_frames()]);
+            self.right_tx
+                .push_slice(&buf.right[0..proc_info.frames.unchecked_frames()]);
         }
     }
 }

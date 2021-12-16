@@ -94,9 +94,9 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         }
 
         let buf = &mut *buffers.stereo_replacing[0].atomic_borrow_mut();
-        let frames = proc_info.frames.compiler_hint_min(MAX_BLOCKSIZE);
-        let gain_amp = self.gain_amp.smoothed(frames);
-        let pan = self.pan.smoothed(frames);
+        let gain_amp = self.gain_amp.smoothed(proc_info.frames);
+        let pan = self.pan.smoothed(proc_info.frames);
+        let frames = proc_info.frames.compiler_hint_frames();
 
         // TODO: SIMD
 
@@ -107,7 +107,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                     // TODO: I'm not sure this is actually linear pan-law. I'm just getting something down for now.
 
                     if gain_amp.is_smoothing() {
-                        for i in 0..frames.0 {
+                        for i in 0..frames {
                             buf.left[i] *= (1.0 - pan.values[i]) * gain_amp.values[i];
                             buf.right[i] *= pan.values[i] * gain_amp.values[i];
                         }
@@ -115,7 +115,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                         // We can optimize by using a constant gain (better SIMD load efficiency).
                         let gain = gain_amp.values[0];
 
-                        for i in 0..frames.0 {
+                        for i in 0..frames {
                             buf.left[i] *= (1.0 - pan.values[i]) * gain;
                             buf.right[i] *= pan.values[i] * gain;
                         }
@@ -132,7 +132,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             };
 
             if gain_amp.is_smoothing() {
-                for i in 0..frames.0 {
+                for i in 0..frames {
                     buf.left[i] *= left_amp * gain_amp.values[i];
                     buf.right[i] *= right_amp * gain_amp.values[i];
                 }
@@ -144,7 +144,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
                 if !(left_amp >= 1.0 - f32::EPSILON && left_amp <= 1.0 + f32::EPSILON)
                     || !(right_amp >= 1.0 - f32::EPSILON && right_amp <= 1.0 + f32::EPSILON)
                 {
-                    for i in 0..frames.0 {
+                    for i in 0..frames {
                         buf.left[i] *= left_amp;
                         buf.right[i] *= right_amp;
                     }

@@ -1,5 +1,5 @@
 use atomic_refcell::AtomicRef;
-use rusty_daw_core::{Frames, SampleRate, SuperFrames};
+use rusty_daw_core::{ProcFrames, SampleRate, SuperFrames};
 
 use crate::shared::SharedStereoBuffer;
 use crate::task::{AudioGraphTask, MimicProcessReplacingTask};
@@ -27,7 +27,11 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
     }
 
     /// Only to be used by the rt thread.
-    pub fn process(&mut self, frames: Frames, global_data: AtomicRef<GlobalData>) {
+    pub fn process(
+        &mut self,
+        frames: ProcFrames<MAX_BLOCKSIZE>,
+        global_data: AtomicRef<GlobalData>,
+    ) {
         // TODO: Use multithreading for processing tasks.
 
         let global_data = &*global_data;
@@ -92,7 +96,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         // (at the cost of worse performance) using features.
         let src = &*self.root_out.borrow();
 
-        let frames = self.proc_info.frames.0.min(out.len() / 2);
+        let frames = self.proc_info.frames.unchecked_frames().min(out.len() / 2);
 
         out = &mut out[0..frames * 2];
 
@@ -117,7 +121,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         // (at the cost of worse performance) using features.
         let src = &*self.root_out.borrow();
 
-        let frames = self.proc_info.frames.0.min(out.len() / 2);
+        let frames = self.proc_info.frames.unchecked_frames().min(out.len() / 2);
 
         out = &mut out[0..frames * 2];
 
@@ -139,10 +143,10 @@ pub struct ProcInfo<const MAX_BLOCKSIZE: usize> {
     pub sample_rate_recip: f64,
 
     /// The number of frames in this process block. This will never be larger than `MAX_BLOCKSIZE`.
-    pub frames: Frames,
+    pub frames: ProcFrames<MAX_BLOCKSIZE>,
 
     /// The number of super-frames in this process block. A single super-frame is exactly
-    /// `1 / 28,224,000 seconds`. This number happens to be nicely divisible by all common sample
+    /// `1 / 508,032,000` of a second. This number happens to be nicely divisible by all common sample
     /// rates, allowing changes to sample rate in a project to be a lossless process.
     ///
     /// Note that super-frames can be calculated by calling `proc_info.frames.to_super_frames(proc_info.sample_rate)`.
@@ -155,14 +159,14 @@ impl<const MAX_BLOCKSIZE: usize> ProcInfo<MAX_BLOCKSIZE> {
         Self {
             sample_rate,
             sample_rate_recip: sample_rate.recip(),
-            frames: Frames(0),
-            super_frames: SuperFrames(0),
+            frames: ProcFrames::default(),
+            super_frames: SuperFrames::default(),
         }
     }
 
     #[inline]
-    fn set_frames(&mut self, frames: Frames) {
-        self.frames = Frames(frames.0.min(MAX_BLOCKSIZE));
+    fn set_frames(&mut self, frames: ProcFrames<MAX_BLOCKSIZE>) {
+        self.frames = frames;
         self.super_frames = self.frames.to_super_frames(self.sample_rate);
     }
 }

@@ -59,13 +59,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         }
 
         let buf = &mut *buffers.mono_replacing[0].atomic_borrow_mut();
-        let frames = proc_info.frames.compiler_hint_min(MAX_BLOCKSIZE);
-        let gain_amp = self.gain_amp.smoothed(frames);
+        let gain_amp = self.gain_amp.smoothed(proc_info.frames);
+        let frames = proc_info.frames.compiler_hint_frames();
 
         // TODO: SIMD
 
         if gain_amp.is_smoothing() {
-            for i in 0..frames.0 {
+            for i in 0..frames {
                 buf.buf[i] *= gain_amp[i];
             }
         } else {
@@ -73,7 +73,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             let gain = gain_amp[0];
 
             if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
-                for i in 0..frames.0 {
+                for i in 0..frames {
                     buf.buf[i] *= gain;
                 }
             } // else nothing to do
@@ -133,13 +133,13 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
         }
 
         let buf = &mut *buffers.stereo_replacing[0].atomic_borrow_mut();
-        let frames = proc_info.frames.compiler_hint_min(MAX_BLOCKSIZE);
-        let gain_amp = self.gain_amp.smoothed(frames);
+        let gain_amp = self.gain_amp.smoothed(proc_info.frames);
+        let frames = proc_info.frames.compiler_hint_frames();
 
         // TODO: SIMD
 
         if gain_amp.is_smoothing() {
-            for i in 0..frames.0 {
+            for i in 0..frames {
                 buf.left[i] *= gain_amp[i];
                 buf.right[i] *= gain_amp[i];
             }
@@ -148,7 +148,7 @@ impl<GlobalData: Send + Sync + 'static, const MAX_BLOCKSIZE: usize>
             let gain = gain_amp[0];
 
             if !(gain >= 1.0 - f32::EPSILON && gain <= 1.0 + f32::EPSILON) {
-                for i in 0..frames.0 {
+                for i in 0..frames {
                     buf.left[i] *= gain;
                     buf.right[i] *= gain;
                 }

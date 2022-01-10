@@ -267,15 +267,15 @@ impl<const MAX_BLOCKSIZE: usize> ProcAudioBuffer<f64, MAX_BLOCKSIZE> {
 pub enum UniqueBufferType {
     /// An f32 audio buffer directly referenced by the AudioGraph
     /// compiler (by buffer index).
-    IndexedAudioF32,
+    AudioF32,
     /// An f64 audio buffer directly referenced by the AudioGraph
     /// compiler (by buffer index).
-    IndexedAudioF64,
+    AudioF64,
 
     /// An f32 audio buffer created for any intermediary steps.
-    ExtraAudioF32,
+    IntermediaryAudioF32,
     /// An f64 audio buffer created for any intermediary steps.
-    ExtraAudioF64,
+    IntermediaryAudioF64,
 }
 
 impl std::fmt::Debug for UniqueBufferType {
@@ -284,10 +284,10 @@ impl std::fmt::Debug for UniqueBufferType {
             f,
             "{}",
             match self {
-                UniqueBufferType::IndexedAudioF32 => "IA32",
-                UniqueBufferType::IndexedAudioF64 => "IA64",
-                UniqueBufferType::ExtraAudioF32 => "EA32",
-                UniqueBufferType::ExtraAudioF64 => "EA64",
+                UniqueBufferType::AudioF32 => "A32",
+                UniqueBufferType::AudioF64 => "A64",
+                UniqueBufferType::IntermediaryAudioF32 => "IA32",
+                UniqueBufferType::IntermediaryAudioF64 => "IA64",
             }
         )
     }
@@ -307,11 +307,11 @@ impl std::fmt::Debug for UniqueBufferID {
 }
 
 pub(crate) struct AudioBufferPool<const MAX_BLOCKSIZE: usize> {
-    indexed_audio_f32: Vec<SharedAudioBuffer<f32, MAX_BLOCKSIZE>>,
-    indexed_audio_f64: Vec<SharedAudioBuffer<f64, MAX_BLOCKSIZE>>,
+    audio_f32: Vec<SharedAudioBuffer<f32, MAX_BLOCKSIZE>>,
+    audio_f64: Vec<SharedAudioBuffer<f64, MAX_BLOCKSIZE>>,
 
-    extra_audio_f32: Vec<SharedAudioBuffer<f32, MAX_BLOCKSIZE>>,
-    extra_audio_f64: Vec<SharedAudioBuffer<f64, MAX_BLOCKSIZE>>,
+    intermediary_audio_f32: Vec<SharedAudioBuffer<f32, MAX_BLOCKSIZE>>,
+    intermediary_audio_f64: Vec<SharedAudioBuffer<f64, MAX_BLOCKSIZE>>,
 
     coll_handle: basedrop::Handle,
 }
@@ -319,11 +319,11 @@ pub(crate) struct AudioBufferPool<const MAX_BLOCKSIZE: usize> {
 impl<const MAX_BLOCKSIZE: usize> AudioBufferPool<MAX_BLOCKSIZE> {
     pub fn new(coll_handle: basedrop::Handle) -> Self {
         Self {
-            indexed_audio_f32: Vec::new(),
-            indexed_audio_f64: Vec::new(),
+            audio_f32: Vec::new(),
+            audio_f64: Vec::new(),
 
-            extra_audio_f32: Vec::new(),
-            extra_audio_f64: Vec::new(),
+            intermediary_audio_f32: Vec::new(),
+            intermediary_audio_f64: Vec::new(),
 
             coll_handle,
         }
@@ -331,17 +331,17 @@ impl<const MAX_BLOCKSIZE: usize> AudioBufferPool<MAX_BLOCKSIZE> {
 
     /// Retrieve an f32 audio buffer directly referenced by the AudioGraph
     /// compiler (by buffer index).
-    pub fn get_indexed_audio_buffer_f32(
+    pub fn get_audio_buffer_f32(
         &mut self,
         buffer_index: usize,
     ) -> SharedAudioBuffer<f32, MAX_BLOCKSIZE> {
         // Resize if buffer does not exist.
-        if self.indexed_audio_f32.len() <= buffer_index {
-            let n_new_buffers = (buffer_index + 1) - self.indexed_audio_f32.len();
+        if self.audio_f32.len() <= buffer_index {
+            let n_new_buffers = (buffer_index + 1) - self.audio_f32.len();
             for _ in 0..n_new_buffers {
-                self.indexed_audio_f32.push(SharedAudioBuffer::new(
+                self.audio_f32.push(SharedAudioBuffer::new(
                     UniqueBufferID {
-                        buffer_type: UniqueBufferType::IndexedAudioF32,
+                        buffer_type: UniqueBufferType::AudioF32,
                         index: buffer_index as u32,
                     },
                     &self.coll_handle,
@@ -349,22 +349,22 @@ impl<const MAX_BLOCKSIZE: usize> AudioBufferPool<MAX_BLOCKSIZE> {
             }
         }
 
-        self.indexed_audio_f32[buffer_index].clone()
+        self.audio_f32[buffer_index].clone()
     }
 
     /// Retrieve an f64 audio buffer directly referenced by the AudioGraph
     /// compiler (by buffer index).
-    pub fn get_indexed_audio_buffer_f64(
+    pub fn get_audio_buffer_f64(
         &mut self,
         buffer_index: usize,
     ) -> SharedAudioBuffer<f64, MAX_BLOCKSIZE> {
         // Resize if buffer does not exist.
-        if self.indexed_audio_f64.len() <= buffer_index {
-            let n_new_buffers = (buffer_index + 1) - self.indexed_audio_f64.len();
+        if self.audio_f64.len() <= buffer_index {
+            let n_new_buffers = (buffer_index + 1) - self.audio_f64.len();
             for _ in 0..n_new_buffers {
-                self.indexed_audio_f64.push(SharedAudioBuffer::new(
+                self.audio_f64.push(SharedAudioBuffer::new(
                     UniqueBufferID {
-                        buffer_type: UniqueBufferType::IndexedAudioF64,
+                        buffer_type: UniqueBufferType::AudioF64,
                         index: buffer_index as u32,
                     },
                     &self.coll_handle,
@@ -372,21 +372,21 @@ impl<const MAX_BLOCKSIZE: usize> AudioBufferPool<MAX_BLOCKSIZE> {
             }
         }
 
-        self.indexed_audio_f64[buffer_index].clone()
+        self.audio_f64[buffer_index].clone()
     }
 
     /// Retrieve an f32 audio buffer used for any intermediary steps.
-    pub fn get_extra_audio_buffer_f32(
+    pub fn get_intermediary_audio_buffer_f32(
         &mut self,
         buffer_index: usize,
     ) -> SharedAudioBuffer<f32, MAX_BLOCKSIZE> {
         // Resize if buffer does not exist.
-        if self.extra_audio_f32.len() <= buffer_index {
-            let n_new_buffers = (buffer_index + 1) - self.extra_audio_f32.len();
+        if self.intermediary_audio_f32.len() <= buffer_index {
+            let n_new_buffers = (buffer_index + 1) - self.intermediary_audio_f32.len();
             for _ in 0..n_new_buffers {
-                self.extra_audio_f32.push(SharedAudioBuffer::new(
+                self.intermediary_audio_f32.push(SharedAudioBuffer::new(
                     UniqueBufferID {
-                        buffer_type: UniqueBufferType::ExtraAudioF32,
+                        buffer_type: UniqueBufferType::IntermediaryAudioF32,
                         index: buffer_index as u32,
                     },
                     &self.coll_handle,
@@ -394,21 +394,21 @@ impl<const MAX_BLOCKSIZE: usize> AudioBufferPool<MAX_BLOCKSIZE> {
             }
         }
 
-        self.extra_audio_f32[buffer_index].clone()
+        self.intermediary_audio_f32[buffer_index].clone()
     }
 
     /// Retrieve an f64 audio buffer used for any intermediary steps.
-    pub fn get_extra_audio_buffer_f64(
+    pub fn get_intermediary_audio_buffer_f64(
         &mut self,
         buffer_index: usize,
     ) -> SharedAudioBuffer<f64, MAX_BLOCKSIZE> {
         // Resize if buffer does not exist.
-        if self.extra_audio_f64.len() <= buffer_index {
-            let n_new_buffers = (buffer_index + 1) - self.extra_audio_f64.len();
+        if self.intermediary_audio_f64.len() <= buffer_index {
+            let n_new_buffers = (buffer_index + 1) - self.intermediary_audio_f64.len();
             for _ in 0..n_new_buffers {
-                self.extra_audio_f64.push(SharedAudioBuffer::new(
+                self.intermediary_audio_f64.push(SharedAudioBuffer::new(
                     UniqueBufferID {
-                        buffer_type: UniqueBufferType::ExtraAudioF64,
+                        buffer_type: UniqueBufferType::IntermediaryAudioF64,
                         index: buffer_index as u32,
                     },
                     &self.coll_handle,
@@ -416,34 +416,34 @@ impl<const MAX_BLOCKSIZE: usize> AudioBufferPool<MAX_BLOCKSIZE> {
             }
         }
 
-        self.extra_audio_f64[buffer_index].clone()
+        self.intermediary_audio_f64[buffer_index].clone()
     }
 
-    pub fn remove_indexed_audio_buffers_f32(&mut self, n_to_remove: usize) {
-        let n = n_to_remove.min(self.indexed_audio_f32.len());
+    pub fn remove_audio_buffers_f32(&mut self, n_to_remove: usize) {
+        let n = n_to_remove.min(self.audio_f32.len());
         for _ in 0..n {
-            let _ = self.indexed_audio_f32.pop();
+            let _ = self.audio_f32.pop();
         }
     }
 
-    pub fn remove_indexed_audio_buffers_f64(&mut self, n_to_remove: usize) {
-        let n = n_to_remove.min(self.indexed_audio_f64.len());
+    pub fn remove_audio_buffers_f64(&mut self, n_to_remove: usize) {
+        let n = n_to_remove.min(self.audio_f64.len());
         for _ in 0..n {
-            let _ = self.indexed_audio_f64.pop();
+            let _ = self.audio_f64.pop();
         }
     }
 
-    pub fn remove_extra_audio_buffers_f32(&mut self, n_to_remove: usize) {
-        let n = n_to_remove.min(self.extra_audio_f32.len());
+    pub fn remove_intermediary_audio_buffers_f32(&mut self, n_to_remove: usize) {
+        let n = n_to_remove.min(self.intermediary_audio_f32.len());
         for _ in 0..n {
-            let _ = self.extra_audio_f32.pop();
+            let _ = self.intermediary_audio_f32.pop();
         }
     }
 
-    pub fn remove_extra_audio_buffers_f64(&mut self, n_to_remove: usize) {
-        let n = n_to_remove.min(self.extra_audio_f64.len());
+    pub fn remove_intermediary_audio_buffers_f64(&mut self, n_to_remove: usize) {
+        let n = n_to_remove.min(self.intermediary_audio_f64.len());
         for _ in 0..n {
-            let _ = self.extra_audio_f64.pop();
+            let _ = self.intermediary_audio_f64.pop();
         }
     }
 }

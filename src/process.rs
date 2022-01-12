@@ -4,6 +4,8 @@ use clap_sys::process::{
 };
 use rusty_daw_core::{Frames, ProcFrames};
 
+use crate::audio_buffer::ProcAudioBuffer;
+
 /// The status of a call to a plugin's `process()` method.
 #[non_exhaustive]
 #[repr(i32)]
@@ -91,3 +93,136 @@ impl<const MAX_BLOCKSIZE: usize> ProcInfo<MAX_BLOCKSIZE> {
         self.frames
     }
 }
+
+pub struct ProcAudioPorts<
+    T: Sized + Copy + Clone + Send + Default + 'static,
+    const MAX_BLOCKSIZE: usize,
+> {
+    /// The main audio input buffer.
+    ///
+    /// Note this may be `None` even when a main input port exists.
+    /// In that case it means the host has given the same buffer for
+    /// the main input and output ports (process replacing).
+    pub main_in: Option<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
+
+    /// The main audio output buffer.
+    pub main_out: Option<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
+
+    /// The extra inputs buffers (not including the main input buffer).
+    pub extra_inputs: Vec<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
+
+    /// The extra output buffers (not including the main input buffer).
+    pub extra_outputs: Vec<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
+}
+
+pub enum MonoInOutStatus<
+    'a,
+    T: Sized + Copy + Clone + Send + Default + 'static,
+    const MAX_BLOCKSIZE: usize,
+> {
+    /// The host has given a single buffer for both the input and output port.
+    InPlace(&'a mut [T; MAX_BLOCKSIZE]),
+
+    /// The host has given a separate input and output buffer.
+    Separate {
+        input: &'a [T; MAX_BLOCKSIZE],
+        output: &'a mut [T; MAX_BLOCKSIZE],
+    },
+
+    /// The host has not given a main mono output buffer.
+    NoMonoOut,
+}
+
+pub enum StereoInOutStatus<
+    'a,
+    T: Sized + Copy + Clone + Send + Default + 'static,
+    const MAX_BLOCKSIZE: usize,
+> {
+    /// The host has given a single buffer for both the input and output port.
+    InPlace((&'a mut [T; MAX_BLOCKSIZE], &'a mut [T; MAX_BLOCKSIZE])),
+
+    /// The host has given a separate input and output buffer.
+    Separate {
+        input: (&'a [T; MAX_BLOCKSIZE], &'a [T; MAX_BLOCKSIZE]),
+        output: (&'a mut [T; MAX_BLOCKSIZE], &'a mut [T; MAX_BLOCKSIZE]),
+    },
+
+    /// The host has not given a stereo output buffer.
+    NoStereoOut,
+}
+
+impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: usize>
+    ProcAudioPorts<T, MAX_BLOCKSIZE>
+{
+    /// A helper method to retrieve the main mono input/output buffers.
+    pub fn main_mono_in_out<'a>(&'a mut self) -> MonoInOutStatus<'a, T, MAX_BLOCKSIZE> {
+        let Self {
+            main_in, main_out, ..
+        } = self;
+
+        if let Some(main_out) = main_out {
+            if let Some(main_in) = main_in {
+                return MonoInOutStatus::Separate {
+                    input: main_in.mono(),
+                    output: main_out.mono_mut(),
+                };
+            } else {
+                return MonoInOutStatus::InPlace(main_out.mono_mut());
+            }
+        }
+
+        MonoInOutStatus::NoMonoOut
+    }
+
+    /// A helper method to retrieve the main stereo input/output buffers.
+    pub fn main_stereo_in_out<'a>(&'a mut self) -> StereoInOutStatus<'a, T, MAX_BLOCKSIZE> {
+        let Self {
+            main_in, main_out, ..
+        } = self;
+
+        if let Some(main_out) = main_out {
+            if let Some(out_bufs) = main_out.stereo_mut() {
+                if let Some(main_in) = main_in {
+                    if let Some(in_bufs) = main_in.stereo() {
+                        return StereoInOutStatus::Separate {
+                            input: in_bufs,
+                            output: out_bufs,
+                        };
+                    } else {
+                        return StereoInOutStatus::InPlace(out_bufs);
+                    }
+                } else {
+                    return StereoInOutStatus::InPlace(out_bufs);
+                }
+            }
+        }
+
+        StereoInOutStatus::NoStereoOut
+    }
+
+    /// A helper method to retrieve the main mono output buffer.
+    #[inline]
+    pub fn main_mono_out<'a>(&'a mut self) -> Option<&'a mut [T; MAX_BLOCKSIZE]> {
+        if let Some(main_out) = &mut self.main_out {
+            Some(main_out.mono_mut())
+        } else {
+            None
+        }
+    }
+
+    /// A helper method to retrieve the main stereo output buffer.
+    #[inline]
+    pub fn main_stereo_out<'a>(
+        &'a mut self,
+    ) -> Option<(&'a mut [T; MAX_BLOCKSIZE], &'a mut [T; MAX_BLOCKSIZE])> {
+        if let Some(main_out) = &mut self.main_out {
+            if let Some(out_bufs) = main_out.stereo_mut() {
+                return Some(out_bufs);
+            }
+        }
+
+        None
+    }
+}
+
+pub trait Processor<const MAX_BLOCKSIZE: usize> {}

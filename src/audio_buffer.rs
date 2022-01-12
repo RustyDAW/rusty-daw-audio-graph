@@ -33,7 +33,7 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 //     technically unsafe. Only once the user tries to dereference those
 //     pointers does it count as unsafe, and Rust will still require the
 //     user to use an unsafe block to do so.
-// - Every time a new "schedule" is compiled, it is sent to the
+// - Every time a new Schedule is compiled, it is sent to the
 // Verifier to verify there exists no data races in the schedule. If a
 // violation is found then the schedule is discarded and the graph is
 // reverted to the previous working state. More specifically the verifer
@@ -61,7 +61,7 @@ pub(crate) struct SharedAudioBuffer<
 impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: usize>
     SharedAudioBuffer<T, MAX_BLOCKSIZE>
 {
-    pub fn new(id: UniqueBufferID, coll_handle: &basedrop::Handle) -> Self {
+    fn new(id: UniqueBufferID, coll_handle: &basedrop::Handle) -> Self {
         Self {
             buffer: Shared::new(
                 coll_handle,

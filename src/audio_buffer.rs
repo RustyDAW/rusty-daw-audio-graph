@@ -87,48 +87,165 @@ impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: us
     }
 }
 
-pub struct ProcAudioBuffer<
-    T: Sized + Copy + Clone + Send + Default + 'static,
-    const MAX_BLOCKSIZE: usize,
-> {
-    /// The array of `raw` buffers is stored here so we can pass the
-    /// appropriate pointer to external plugins.
-    raw_buffers: SmallVec<[*const T; 2]>,
+/// An audio port buffer for use with external clap plugins.
+pub struct ClapAudioBuffer<const MAX_BLOCKSIZE: usize> {
+    raw: clap_audio_buffer,
 
-    channel_count: u32,
-    latency: u32,     // latency from/to the audio interface
-    silent_mask: u64, // mask & (1 << N) to test if channel N is silent
+    is_float: bool,
+
+    raw_buffers_f32: SmallVec<[*const f32; 2]>,
+    raw_buffers_f64: SmallVec<[*const f64; 2]>,
 
     /// We keep a reference-counted pointer to the same buffers in `raw` so
     /// the garbage collector can know when it is safe to deallocate unused
     /// buffers.
+    rc_buffers_f32: SmallVec<[SharedAudioBuffer<f32, MAX_BLOCKSIZE>; 2]>,
+    rc_buffers_f64: SmallVec<[SharedAudioBuffer<f64, MAX_BLOCKSIZE>; 2]>,
+}
+
+impl<const MAX_BLOCKSIZE: usize> std::fmt::Debug for ClapAudioBuffer<MAX_BLOCKSIZE> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_float {
+            f.debug_list()
+                .entries(self.rc_buffers_f32.iter().map(|b| b.buffer.1))
+                .finish()
+        } else {
+            f.debug_list()
+                .entries(self.rc_buffers_f64.iter().map(|b| b.buffer.1))
+                .finish()
+        }
+    }
+}
+
+impl<const MAX_BLOCKSIZE: usize> ClapAudioBuffer<MAX_BLOCKSIZE> {
+    pub(crate) fn new_f32(
+        buffers: SmallVec<[SharedAudioBuffer<f32, MAX_BLOCKSIZE>; 2]>,
+        latency: u32,
+    ) -> Self {
+        assert_ne!(buffers.len(), 0);
+
+        let raw_buffers_f32: SmallVec<[*const f32; 2]> = buffers
+            .iter()
+            .map(|b| {
+                // Please refer to the "SAFETY NOTE" above on why this is safe.
+                //
+                // TODO: Can we be sure that the data that this pointer points to
+                // never moves? It's a shared atomic pointer so I assume it doesn't
+                // move.
+                unsafe { (*b.buffer.0.get()).as_ptr() }
+            })
+            .collect();
+
+        let raw = clap_audio_buffer {
+            data32: std::ptr::null(),
+            data64: std::ptr::null(),
+            channel_count: buffers.len() as u32,
+            latency,
+            constant_mask: 0,
+        };
+
+        Self {
+            raw,
+
+            is_float: true,
+
+            raw_buffers_f32,
+            raw_buffers_f64: SmallVec::new(),
+
+            rc_buffers_f32: buffers,
+            rc_buffers_f64: SmallVec::new(),
+        }
+    }
+
+    pub(crate) fn new_f64(
+        buffers: SmallVec<[SharedAudioBuffer<f64, MAX_BLOCKSIZE>; 2]>,
+        latency: u32,
+    ) -> Self {
+        assert_ne!(buffers.len(), 0);
+
+        let raw_buffers_f64: SmallVec<[*const f64; 2]> = buffers
+            .iter()
+            .map(|b| {
+                // Please refer to the "SAFETY NOTE" above on why this is safe.
+                //
+                // TODO: Can we be sure that the data that this pointer points to
+                // never moves? It's a shared atomic pointer so I assume it doesn't
+                // move.
+                unsafe { (*b.buffer.0.get()).as_ptr() }
+            })
+            .collect();
+
+        let raw = clap_audio_buffer {
+            data32: std::ptr::null(),
+            data64: std::ptr::null(),
+            channel_count: buffers.len() as u32,
+            latency,
+            constant_mask: 0,
+        };
+
+        Self {
+            raw,
+
+            is_float: false,
+
+            raw_buffers_f32: SmallVec::new(),
+            raw_buffers_f64,
+
+            rc_buffers_f32: SmallVec::new(),
+            rc_buffers_f64: buffers,
+        }
+    }
+
+    pub(crate) fn as_clap(&mut self) -> *const clap_audio_buffer {
+        // TODO: We could probably use `Pin` or something to avoid collecting
+        // the pointer every time.
+
+        if self.is_float {
+            self.raw.data32 = self.raw_buffers_f32.as_ptr();
+        } else {
+            self.raw.data64 = self.raw_buffers_f64.as_ptr();
+        }
+
+        &self.raw
+    }
+}
+
+/// An audio port buffer for use with internal plugins.
+pub struct InternalAudioBuffer<
+    T: Sized + Copy + Clone + Send + Default + 'static,
+    const MAX_BLOCKSIZE: usize,
+> {
+    latency: u32,     // latency from/to the audio interface
+    silent_mask: u64, // mask & (1 << N) to test if channel N is silent
+
     rc_buffers: SmallVec<[SharedAudioBuffer<T, MAX_BLOCKSIZE>; 2]>,
 }
 
+impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: usize> std::fmt::Debug
+    for InternalAudioBuffer<T, MAX_BLOCKSIZE>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.rc_buffers.iter().map(|b| b.buffer.1))
+            .finish()
+    }
+}
+
 impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: usize>
-    ProcAudioBuffer<T, MAX_BLOCKSIZE>
+    InternalAudioBuffer<T, MAX_BLOCKSIZE>
 {
     pub(crate) fn new(
         buffers: SmallVec<[SharedAudioBuffer<T, MAX_BLOCKSIZE>; 2]>,
         latency: u32,
     ) -> Self {
         assert_ne!(buffers.len(), 0);
-
-        let raw_buffers: SmallVec<[*const T; 2]> = buffers
-            .iter()
-            .map(|b| {
-                // Please refer to the "SAFETY NOTE" above on why this is safe.
-                //
-                // TODO: Can we be sure that this pointer will never get moved?
-                unsafe { (*b.buffer.0.get()).as_ptr() }
-            })
-            .collect();
-
-        let channel_count = buffers.len() as u32;
+        buffers.len() as u32;
 
         Self {
+            /*
             raw_buffers,
             channel_count,
+            */
             latency,
             silent_mask: 0,
             rc_buffers: buffers,
@@ -139,6 +256,12 @@ impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: us
     #[inline]
     pub fn channel_count(&self) -> usize {
         self.rc_buffers.len()
+    }
+
+    /// The latency from/to the audio interface.
+    #[inline]
+    pub fn latency(&self) -> u32 {
+        self.latency
     }
 
     /// Immutably borrow a channel.
@@ -235,30 +358,6 @@ impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: us
     }
 
     // TODO: Methods for borrowing more than 2 channel buffers at a time.
-}
-
-impl<const MAX_BLOCKSIZE: usize> ProcAudioBuffer<f32, MAX_BLOCKSIZE> {
-    pub fn as_clap_audio_buffer_f32(&self) -> clap_audio_buffer {
-        clap_audio_buffer {
-            data32: self.raw_buffers.as_ptr(),
-            data64: std::ptr::null(),
-            channel_count: self.channel_count,
-            latency: self.latency,
-            constant_mask: self.silent_mask,
-        }
-    }
-}
-
-impl<const MAX_BLOCKSIZE: usize> ProcAudioBuffer<f64, MAX_BLOCKSIZE> {
-    pub fn as_clap_audio_buffer_f64(&self) -> clap_audio_buffer {
-        clap_audio_buffer {
-            data32: std::ptr::null(),
-            data64: self.raw_buffers.as_ptr(),
-            channel_count: self.channel_count,
-            latency: self.latency,
-            constant_mask: self.silent_mask,
-        }
-    }
 }
 
 /// Used for debugging and verifying purposes.

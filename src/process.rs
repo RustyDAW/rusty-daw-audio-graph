@@ -1,10 +1,16 @@
-use clap_sys::process::{
-    clap_process, clap_process_status, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET,
-    CLAP_PROCESS_ERROR, CLAP_PROCESS_SLEEP,
+use std::{fmt::format, pin::Pin};
+
+use clap_sys::{
+    audio_buffer::clap_audio_buffer,
+    process::{
+        clap_process, clap_process_status, CLAP_PROCESS_CONTINUE,
+        CLAP_PROCESS_CONTINUE_IF_NOT_QUIET, CLAP_PROCESS_ERROR, CLAP_PROCESS_SLEEP,
+    },
 };
 use rusty_daw_core::{Frames, ProcFrames};
+use smallvec::SmallVec;
 
-use crate::audio_buffer::ProcAudioBuffer;
+use crate::audio_buffer::{ClapAudioBuffer, InternalAudioBuffer};
 
 /// The status of a call to a plugin's `process()` method.
 #[non_exhaustive]
@@ -46,75 +52,6 @@ impl ProcessStatus {
     }
 }
 
-pub struct ProcInfo<const MAX_BLOCKSIZE: usize> {
-    raw: clap_process,
-
-    steady_time: Option<Frames>,
-    frames: ProcFrames<MAX_BLOCKSIZE>,
-}
-
-impl<const MAX_BLOCKSIZE: usize> ProcInfo<MAX_BLOCKSIZE> {
-    pub(crate) fn from_clap(info: clap_process) -> Self {
-        let steady_time = if info.steady_time < 0 {
-            None
-        } else {
-            Some(Frames::new(info.steady_time as u64))
-        };
-        let frames: ProcFrames<MAX_BLOCKSIZE> = ProcFrames::new(info.frames_count as usize);
-
-        Self {
-            raw: info,
-
-            steady_time,
-            frames,
-        }
-    }
-
-    pub(crate) fn as_clap(&self) -> &clap_process {
-        &self.raw
-    }
-
-    /// A steady sample time counter.
-    ///
-    /// This field can be used to calculate the sleep duration between two process calls.
-    /// This value may be specific to this plugin instance and have no relation to what
-    /// other plugin instances may receive.
-    ///
-    /// This will return `None` if not available, otherwise the value will be increased by
-    /// at least `frames_count` for the next call to process.
-    #[inline]
-    pub fn steady_time(&self) -> Option<Frames> {
-        self.steady_time
-    }
-
-    /// The number of frames to process.
-    #[inline]
-    pub fn frames(&self) -> ProcFrames<MAX_BLOCKSIZE> {
-        self.frames
-    }
-}
-
-pub struct ProcAudioPorts<
-    T: Sized + Copy + Clone + Send + Default + 'static,
-    const MAX_BLOCKSIZE: usize,
-> {
-    /// The main audio input buffer.
-    ///
-    /// Note this may be `None` even when a main input port exists.
-    /// In that case it means the host has given the same buffer for
-    /// the main input and output ports (process replacing).
-    pub main_in: Option<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
-
-    /// The main audio output buffer.
-    pub main_out: Option<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
-
-    /// The extra inputs buffers (not including the main input buffer).
-    pub extra_inputs: Vec<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
-
-    /// The extra output buffers (not including the main input buffer).
-    pub extra_outputs: Vec<ProcAudioBuffer<T, MAX_BLOCKSIZE>>,
-}
-
 pub enum MonoInOutStatus<
     'a,
     T: Sized + Copy + Clone + Send + Default + 'static,
@@ -151,9 +88,151 @@ pub enum StereoInOutStatus<
     NoStereoOut,
 }
 
+/// The port buffers (for use with external CLAP plugins).
+pub(crate) struct ClapPorts<const MAX_BLOCKSIZE: usize> {
+    audio_inputs: SmallVec<[ClapAudioBuffer<MAX_BLOCKSIZE>; 1]>,
+    audio_outputs: SmallVec<[ClapAudioBuffer<MAX_BLOCKSIZE>; 1]>,
+
+    raw_audio_inputs: SmallVec<[*const clap_audio_buffer; 1]>,
+    raw_audio_outputs: SmallVec<[*const clap_audio_buffer; 1]>,
+
+    audio_inputs_count: u32,
+    audio_outputs_count: u32,
+}
+
+impl<const MAX_BLOCKSIZE: usize> ClapPorts<MAX_BLOCKSIZE> {
+    pub(crate) fn debug_fields(&self, f: &mut std::fmt::DebugStruct) {
+        if !self.audio_inputs.is_empty() {
+            let mut s = format!("[{:?}", &self.audio_inputs[0]);
+            for b in self.audio_inputs.iter().skip(1) {
+                s.push_str(&format!(" ,{:?}", b));
+            }
+            s.push_str("]");
+
+            f.field("audio_in", &s);
+        }
+        if !self.audio_outputs.is_empty() {
+            let mut s = format!("[{:?}", &self.audio_outputs[0]);
+            for b in self.audio_outputs.iter().skip(1) {
+                s.push_str(&format!(" ,{:?}", b));
+            }
+            s.push_str("]");
+
+            f.field("audio_out", &s);
+        }
+    }
+
+    pub(crate) fn new(
+        audio_inputs: SmallVec<[ClapAudioBuffer<MAX_BLOCKSIZE>; 1]>,
+        audio_outputs: SmallVec<[ClapAudioBuffer<MAX_BLOCKSIZE>; 1]>,
+    ) -> Self {
+        let mut raw_audio_inputs: SmallVec<[*const clap_audio_buffer; 1]> =
+            SmallVec::with_capacity(audio_inputs.len());
+        let mut raw_audio_outputs: SmallVec<[*const clap_audio_buffer; 1]> =
+            SmallVec::with_capacity(audio_outputs.len());
+        for _ in 0..audio_inputs.len() {
+            raw_audio_inputs.push(std::ptr::null());
+        }
+        for _ in 0..audio_outputs.len() {
+            raw_audio_outputs.push(std::ptr::null());
+        }
+
+        let audio_inputs_count = audio_inputs.len() as u32;
+        let audio_outputs_count = audio_outputs.len() as u32;
+
+        Self {
+            audio_inputs,
+            audio_outputs,
+            raw_audio_inputs,
+            raw_audio_outputs,
+            audio_inputs_count,
+            audio_outputs_count,
+        }
+    }
+
+    pub(crate) fn prepare(&mut self, proc: &mut clap_process) {
+        // TODO: We could probably use `Pin` or something to avoid collecting
+        // the array of pointers every time.
+
+        // Safe because we own all this data, and we made sure that the SmallVecs
+        // have the correct size in the constructor.
+        unsafe {
+            for i in 0..self.audio_inputs.len() {
+                *self.raw_audio_inputs.get_unchecked_mut(i) = self.audio_inputs[i].as_clap();
+            }
+            for i in 0..self.audio_outputs.len() {
+                *self.raw_audio_outputs.get_unchecked_mut(i) = self.audio_outputs[i].as_clap();
+            }
+        }
+
+        proc.audio_inputs = if !self.raw_audio_inputs.is_empty() {
+            self.raw_audio_inputs[0]
+        } else {
+            std::ptr::null()
+        };
+        proc.audio_outputs = if !self.raw_audio_outputs.is_empty() {
+            self.raw_audio_outputs[0]
+        } else {
+            std::ptr::null()
+        };
+
+        proc.audio_inputs_count = self.audio_inputs_count;
+        proc.audio_outputs_count = self.audio_outputs_count;
+    }
+}
+
+/// The audio port buffers (for use with internal plugins).
+pub struct InternalAudioPorts<
+    T: Sized + Copy + Clone + Send + Default + 'static,
+    const MAX_BLOCKSIZE: usize,
+> {
+    /// The main audio input buffer.
+    ///
+    /// Note this may be `None` even when a main input port exists.
+    /// In that case it means the host has given the same buffer for
+    /// the main input and output ports (process replacing).
+    pub main_in: Option<InternalAudioBuffer<T, MAX_BLOCKSIZE>>,
+
+    /// The main audio output buffer.
+    pub main_out: Option<InternalAudioBuffer<T, MAX_BLOCKSIZE>>,
+
+    /// The extra inputs buffers (not including the main input buffer).
+    pub extra_inputs: Vec<InternalAudioBuffer<T, MAX_BLOCKSIZE>>,
+
+    /// The extra output buffers (not including the main input buffer).
+    pub extra_outputs: Vec<InternalAudioBuffer<T, MAX_BLOCKSIZE>>,
+}
+
 impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: usize>
-    ProcAudioPorts<T, MAX_BLOCKSIZE>
+    InternalAudioPorts<T, MAX_BLOCKSIZE>
 {
+    pub(crate) fn debug_fields(&self, f: &mut std::fmt::DebugStruct) {
+        if let Some(b) = &self.main_in {
+            f.field("main_in", b);
+        }
+        if let Some(b) = &self.main_out {
+            f.field("main_out", b);
+        }
+        if !self.extra_inputs.is_empty() {
+            let mut s = format!("[{:?}", &self.extra_inputs[0]);
+            for b in self.extra_inputs.iter().skip(1) {
+                s.push_str(&format!(" ,{:?}", b));
+            }
+            s.push_str("]");
+
+            f.field("extra_in", &s);
+        }
+        if !self.extra_outputs.is_empty() {
+            let mut s = format!("[{:?}", &self.extra_outputs[0]);
+            for b in self.extra_outputs.iter().skip(1) {
+                s.push_str(&format!(" ,{:?}", b));
+            }
+            s.push_str("]");
+
+            f.field("extra_out", &s);
+        }
+    }
+
     /// A helper method to retrieve the main mono input/output buffers.
     pub fn main_mono_in_out<'a>(&'a mut self) -> MonoInOutStatus<'a, T, MAX_BLOCKSIZE> {
         let Self {
@@ -225,4 +304,17 @@ impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: us
     }
 }
 
-pub trait Processor<const MAX_BLOCKSIZE: usize> {}
+pub struct ProcInfo<const MAX_BLOCKSIZE: usize> {
+    /// A steady sample time counter.
+    ///
+    /// This field can be used to calculate the sleep duration between two process calls.
+    /// This value may be specific to this plugin instance and have no relation to what
+    /// other plugin instances may receive.
+    ///
+    /// This will return `None` if not available, otherwise the value will be increased by
+    /// at least `frames_count` for the next call to process.
+    pub steady_time: Option<Frames>,
+
+    /// The number of frames to process.
+    pub frames: ProcFrames<MAX_BLOCKSIZE>,
+}

@@ -1,5 +1,3 @@
-use std::{fmt::format, pin::Pin};
-
 use clap_sys::{
     audio_buffer::clap_audio_buffer,
     process::{
@@ -182,7 +180,7 @@ impl<const MAX_BLOCKSIZE: usize> ClapPorts<MAX_BLOCKSIZE> {
 }
 
 /// The audio port buffers (for use with internal plugins).
-pub struct InternalAudioPorts<
+pub struct AudioPorts<
     T: Sized + Copy + Clone + Send + Default + 'static,
     const MAX_BLOCKSIZE: usize,
 > {
@@ -204,7 +202,7 @@ pub struct InternalAudioPorts<
 }
 
 impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: usize>
-    InternalAudioPorts<T, MAX_BLOCKSIZE>
+    AudioPorts<T, MAX_BLOCKSIZE>
 {
     pub(crate) fn debug_fields(&self, f: &mut std::fmt::DebugStruct) {
         if let Some(b) = &self.main_in {

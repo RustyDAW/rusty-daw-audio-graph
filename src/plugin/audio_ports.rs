@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use crate::channel_map::ChannelMap;
 use crate::helpers::c_char_buf_to_str;
 
-/// Specifies whether a port uses floats (`f32`) or doubles (`f64`)
+/// Specifies whether a port uses floats (`f32`) or doubles (`f64`).
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum SampleSize {
@@ -35,37 +35,25 @@ impl Default for SampleSize {
     }
 }
 
-/// Information on an audio port
+/// Information on an audio port.
 pub struct AudioPortInfo<'a> {
-    /// The stable unique identifier of this audio port
+    /// The stable unique identifier of this audio port.
     pub unique_stable_id: u32,
 
     /// The displayable name
     pub display_name: Cow<'a, str>,
 
-    /// The number of channels in this port
+    /// The number of channels in this port.
     ///
     /// For example, a mono audio port would have `1` channel, and a
     /// stereo audio port would have `2`.
     pub channel_count: u32,
 
-    /// The channel map of this port
+    /// The channel map of this port.
     pub channel_map: ChannelMap,
 
-    /// Specifies whether this port uses floats (`f32`) or doubles (`f64`)
-    pub sample_size: SampleSize,
-
-    /// Whether or not this port is a "main" port
-    ///
-    /// There can only be 1 main input and output port
-    pub is_main: bool,
-
-    /// Whether or not this port is a "control voltage" port
+    /// Whether or not this port is a "control voltage" port.
     pub is_cv: bool,
-
-    /// If true, then the host can use the same buffer for the main
-    /// input and main output port
-    pub in_place: bool,
 }
 
 impl<'a> AudioPortInfo<'a> {
@@ -81,6 +69,7 @@ impl<'a> AudioPortInfo<'a> {
             return None;
         };
 
+        /*
         let sample_size = if let Some(s) = SampleSize::from_clap(info.sample_size) {
             s
         } else {
@@ -91,6 +80,7 @@ impl<'a> AudioPortInfo<'a> {
 
             return None;
         };
+        */
 
         let display_name = match c_char_buf_to_str(&info.name) {
             Ok(s) => s,
@@ -106,18 +96,38 @@ impl<'a> AudioPortInfo<'a> {
             display_name,
             channel_count: info.channel_count,
             channel_map,
-            sample_size,
-            is_main: info.is_main,
             is_cv: info.is_cv,
-            in_place: info.in_place,
         })
     }
 }
 
 pub struct PluginAudioPortsExtension<'a> {
-    /// The list of audio input ports
-    pub input_ports: &'a [AudioPortInfo<'a>],
+    /// Info about the "main" input audio port.
+    ///
+    /// Set this to `None` for no main input port.
+    pub main_input: Option<&'a AudioPortInfo<'a>>,
 
-    /// The list of audio output ports
-    pub output_ports: &'a [AudioPortInfo<'a>],
+    /// Info about the "main" output audio port.
+    ///
+    /// Set this to `None` for no main output port.
+    pub main_output: Option<&'a AudioPortInfo<'a>>,
+
+    /// The list of any extra audio input ports (not including the "main"
+    /// input port).
+    pub extra_input_ports: &'a [AudioPortInfo<'a>],
+
+    /// The list of any extra audio output ports (not including the "main"
+    /// output port).
+    pub extra_output_ports: &'a [AudioPortInfo<'a>],
+
+    /// If true, then the host can use the same buffer for the main
+    /// input and main output port.
+    ///
+    /// This is only relevant if you do have both `main_input`
+    /// and `main_output` set.
+    pub in_place: bool,
+
+    /// Specifies whether this plugin prefers to use floats (`f32`)
+    /// or doubles (`f64`).
+    pub preferred_sample_size: SampleSize,
 }

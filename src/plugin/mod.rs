@@ -5,6 +5,17 @@ pub mod audio_ports;
 
 use crate::process::{AudioPorts, ProcInfo, ProcessStatus};
 
+/// Used by the host to uniquely identify a particular plugin instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PluginInstanceID(u64);
+
+impl PluginInstanceID {
+    pub(crate) fn new(id_accumulator: &mut u64) -> Self {
+        *id_accumulator += 1;
+        Self(*id_accumulator)
+    }
+}
+
 pub struct PluginDescriptor {
     /// The unique reverse-domain-name identifier of this plugin.
     ///
@@ -87,7 +98,7 @@ pub trait Plugin<const MAX_BLOCKSIZE: usize> {
 
     /// Called when the plugin becomes inactive (the realtime processor counterpart gets
     /// dropped).
-    fn deactive(&mut self) {}
+    fn deactivate(&mut self) {}
 
     /// An optional extension that describes the available audio ports
     /// on this plugin.

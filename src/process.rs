@@ -300,6 +300,13 @@ impl<T: Sized + Copy + Clone + Send + Default + 'static, const MAX_BLOCKSIZE: us
 
         None
     }
+
+    /// Returns `true` if all the input buffers are silent.
+    pub fn inputs_are_silent(&self) -> bool {
+        // TODO
+
+        false
+    }
 }
 
 pub struct ProcInfo<const MAX_BLOCKSIZE: usize> {

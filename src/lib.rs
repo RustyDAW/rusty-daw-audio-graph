@@ -1,7 +1,9 @@
 pub mod audio_buffer;
 pub mod channel_map;
 pub mod helpers;
+pub mod host;
 pub mod plugin;
+pub mod plugin_instance_pool;
 pub mod process;
-pub mod rt_processor_pool;
 pub mod task;
+pub mod schedule;

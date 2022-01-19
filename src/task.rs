@@ -1,7 +1,7 @@
 use clap_sys::process::clap_process;
 
 use crate::process::{AudioPorts, ClapPorts, ProcInfo, ProcessStatus};
-use crate::rt_processor_pool::SharedRtProcessor;
+use crate::plugin_instance_pool::SharedRtProcessor;
 
 pub(crate) enum Task<const MAX_BLOCKSIZE: usize> {
     InternalProcessor(InternalProcessorTask<MAX_BLOCKSIZE>),
@@ -49,17 +49,34 @@ pub(crate) struct InternalProcessorTask<const MAX_BLOCKSIZE: usize> {
 
 impl<const MAX_BLOCKSIZE: usize> InternalProcessorTask<MAX_BLOCKSIZE> {
     #[inline]
-    pub fn process(&mut self, info: &ProcInfo<MAX_BLOCKSIZE>) -> ProcessStatus {
+    pub fn process(&mut self, info: &ProcInfo<MAX_BLOCKSIZE>) {
         let Self {
             processor,
             audio_ports,
         } = self;
 
-        let processor = processor.borrow_mut();
+        let processor_instance = processor.borrow_mut();
 
-        match audio_ports {
-            TaskAudioPorts::F32(a) => processor.process(info, a),
-            TaskAudioPorts::F64(a) => processor.process_f64(info, a),
+        if let ProcessStatus::Sleep = processor_instance.last_process_status {
+            let inputs_are_silent = match audio_ports {
+                TaskAudioPorts::F32(a) => a.inputs_are_silent(),
+                TaskAudioPorts::F64(a) => a.inputs_are_silent(),
+            };
+
+            if !inputs_are_silent && !processor_instance.active {
+                processor_instance.active = true;
+
+                processor_instance.processor.start_processing();
+            }
+        }
+
+        if processor_instance.active {
+            let status = match audio_ports {
+                TaskAudioPorts::F32(a) => processor_instance.processor.process(info, a),
+                TaskAudioPorts::F64(a) => processor_instance.processor.process_f64(info, a),
+            };
+
+            
         }
     }
 }
